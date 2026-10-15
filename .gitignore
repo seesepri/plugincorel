@@ -1,0 +1,15 @@
+# Visual Studio / MSBuild output
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+*.cache
+
+# Local packages / logs
+*.log
+*.tmp
+
+# Keep source and project files tracked; do not commit secrets or local CDR files.
+*.cdr
+*.bak
