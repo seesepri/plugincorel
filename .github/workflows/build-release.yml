@@ -1,9 +1,13 @@
-name: Build and Release Corel Page Copier
+
+name: Build and Draft Release - Corel Page Copier
 
 on:
   push:
-    branches: ["main", "master"]
-    tags: ["v*"]
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -11,49 +15,80 @@ permissions:
 
 jobs:
   build:
+    name: Build Windows x64
     runs-on: windows-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Add MSBuild to PATH
+      - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build .NET Framework 4.8 x64
+      - name: Build .NET Framework 4.8
         shell: pwsh
         run: |
-          $project = "CorelPageCopier_MODERN/CorelPageCopier.vbproj"
-          if (!(Test-Path $project)) { throw "Project file not found: $project" }
-          msbuild $project /m /t:Build /p:Configuration=Release /p:Platform=x64
-          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE" }
+          $ErrorActionPreference = "Stop"
+          $project = "CorelPageCopier/CorelPageCopier.vbproj"
+
+          if (!(Test-Path $project)) {
+            throw "Project file not found: $project"
+          }
+
+          msbuild $project /m /t:Rebuild /p:Configuration=Release /p:Platform=x64
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed with exit code $LASTEXITCODE"
+          }
 
       - name: Prepare release package
         shell: pwsh
         run: |
-          $exe = "CorelPageCopier_MODERN/bin/x64/Release/CorelPageCopier.exe"
-          if (!(Test-Path $exe)) {
-            $exe = "CorelPageCopier_MODERN/bin/Release/CorelPageCopier.exe"
-          }
-          if (!(Test-Path $exe)) { throw "Built executable was not found. Check project output path." }
-          New-Item -ItemType Directory -Force -Path release-package | Out-Null
-          Copy-Item $exe release-package/
-          Copy-Item "CorelPageCopier_MODERN/README_ID.md" release-package/README_ID.md
-          if (Test-Path "CorelPageCopier_MODERN/ToolbarLauncher.bas") {
-            Copy-Item "CorelPageCopier_MODERN/ToolbarLauncher.bas" release-package/ToolbarLauncher.bas
-          }
-          Compress-Archive -Path "release-package/*" -DestinationPath "CorelPageCopier-Windows-x64.zip" -Force
+          $ErrorActionPreference = "Stop"
 
-      - name: Upload build artifact
+          $exe = "CorelPageCopier/bin/x64/Release/CorelPageCopier.exe"
+
+          if (!(Test-Path $exe)) {
+            $exe = "CorelPageCopier/bin/Release/CorelPageCopier.exe"
+          }
+
+          if (!(Test-Path $exe)) {
+            throw "EXE not found. Check the MSBuild output path."
+          }
+
+          New-Item -ItemType Directory -Force -Path release-package | Out-Null
+
+          Copy-Item $exe "release-package/CorelPageCopier.exe"
+          Copy-Item "CorelPageCopier/README_ID.md" "release-package/README_ID.md"
+
+          if (Test-Path "CorelPageCopier/ToolbarLauncher.bas") {
+            Copy-Item "CorelPageCopier/ToolbarLauncher.bas" "release-package/ToolbarLauncher.bas"
+          }
+
+          Compress-Archive `
+            -Path "release-package/*" `
+            -DestinationPath "CorelPageCopier-Windows-x64.zip" `
+            -Force
+
+          Write-Host "Release package prepared successfully."
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: CorelPageCopier-Windows-x64
-          path: CorelPageCopier-Windows-x64.zip
+          path: |
+            release-package/CorelPageCopier.exe
+            CorelPageCopier-Windows-x64.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish GitHub Release for version tags
+      - name: Create Draft GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           generate_release_notes: true
-          files: CorelPageCopier-Windows-x64.zip
+          fail_on_unmatched_files: true
+          files: |
+            CorelPageCopier-Windows-x64.zip
+            release-package/CorelPageCopier.exe
