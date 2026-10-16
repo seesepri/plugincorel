@@ -37,115 +37,273 @@ Public Class CopierForm
         Text = "Corel Page Copier"
         StartPosition = FormStartPosition.CenterScreen
         Size = New Size(600, 820)
-        MinimumSize = New Size(560, 740)
+        MinimumSize = New Size(520, 700)
         BackColor = Color.FromArgb(245, 247, 250)
         Font = New Font("Segoe UI", 9.0F)
         BuildUi()
         AddHandler Shown, AddressOf FormShown
     End Sub
 
-    Private Sub BuildUi()
-        SuspendLayout()
-        Controls.Clear()
+    
+Private Sub BuildUi()
+    SuspendLayout()
+    Controls.Clear()
 
-        Dim root As New TableLayoutPanel With {
-            .Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 4,
-            .Padding = New Padding(18), .BackColor = BackColor
-        }
-        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        root.RowStyles.Add(New RowStyle(SizeType.Absolute, 86.0F))
-        root.RowStyles.Add(New RowStyle(SizeType.Percent, 56.0F))
-        root.RowStyles.Add(New RowStyle(SizeType.Percent, 44.0F))
-        root.RowStyles.Add(New RowStyle(SizeType.Absolute, 62.0F))
-        Controls.Add(root)
+    ' Layout utama: header, panel salin, panel Auto Select, dan status.
+    Dim root As New TableLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .ColumnCount = 1,
+        .RowCount = 4,
+        .Padding = New Padding(16),
+        .BackColor = BackColor,
+        .GrowStyle = TableLayoutPanelGrowStyle.FixedSize
+    }
 
-        Dim header As New Panel With {.Dock = DockStyle.Fill, .BackColor = BackColor}
-        Dim title As New Label With {.Text = "Corel Page Copier", .Font = New Font("Segoe UI Semibold", 19.0F, FontStyle.Bold), .ForeColor = Color.FromArgb(25, 35, 52), .AutoSize = True, .Location = New Point(0, 0)}
-        Dim subtitle As New Label With {.Text = "Salin desain dan pilih objek dengan lebih cepat", .Font = New Font("Segoe UI", 9.5F), .ForeColor = Color.FromArgb(102, 115, 132), .AutoSize = True, .Location = New Point(2, 36)}
-        sourceLabel.SetBounds(2, 59, 520, 22)
-        sourceLabel.Font = New Font("Segoe UI", 8.5F)
-        sourceLabel.ForeColor = Color.FromArgb(65, 95, 125)
-        header.Controls.AddRange(New Control() {title, subtitle, sourceLabel})
-        root.Controls.Add(header, 0, 0)
+    root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+    root.RowStyles.Add(New RowStyle(SizeType.Absolute, 76.0F))
+    root.RowStyles.Add(New RowStyle(SizeType.Percent, 57.0F))
+    root.RowStyles.Add(New RowStyle(SizeType.Percent, 43.0F))
+    root.RowStyles.Add(New RowStyle(SizeType.Absolute, 56.0F))
+    Controls.Add(root)
 
-        Dim copyCard As Panel = CreateCard()
-        copyCard.Margin = New Padding(0, 0, 0, 12)
-        Dim copyTitle As Label = CreateSectionTitle("01  Salin ke halaman")
-        copyTitle.Location = New Point(16, 14)
-        copyCard.Controls.Add(copyTitle)
-        Dim hint As New Label With {.Text = "Pilih halaman tujuan. Halaman aktif adalah sumber dan tidak bisa dipilih.", .AutoSize = False, .Location = New Point(18, 43), .Size = New Size(500, 32), .ForeColor = Color.FromArgb(102, 115, 132)}
-        copyCard.Controls.Add(hint)
-        pagesList.SetBounds(18, 78, 500, 145)
-        pagesList.Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
-        pagesList.CheckOnClick = True
-        pagesList.IntegralHeight = False
-        pagesList.BorderStyle = BorderStyle.FixedSingle
-        pagesList.BackColor = Color.White
-        pagesList.Font = New Font("Segoe UI", 9.0F)
-        copyCard.Controls.Add(pagesList)
+    ' HEADER
+    Dim header As New Panel With {
+        .Dock = DockStyle.Fill,
+        .BackColor = BackColor,
+        .Margin = New Padding(0, 0, 0, 6)
+    }
 
-        Dim pageActions As New FlowLayoutPanel With {.Location = New Point(16, 230), .Size = New Size(500, 34), .Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right, .FlowDirection = FlowDirection.LeftToRight, .WrapContents = False, .BackColor = Color.White}
-        Dim refresh As Button = CreateButton("Muat ulang", False, 92)
-        AddHandler refresh.Click, AddressOf RefreshClicked
-        Dim all As Button = CreateButton("Pilih semua", False, 98)
-        AddHandler all.Click, Sub() SetAllChecks(True)
-        Dim none As Button = CreateButton("Kosongkan", False, 94)
-        AddHandler none.Click, Sub() SetAllChecks(False)
-        pageActions.Controls.AddRange(New Control() {refresh, all, none})
-        copyCard.Controls.Add(pageActions)
-        Dim copy As Button = CreateButton("Salin ke halaman terpilih", True, 500)
-        copy.SetBounds(18, 270, 500, 38)
-        copy.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
-        AddHandler copy.Click, AddressOf CopyClicked
-        copyCard.Controls.Add(copy)
-        root.Controls.Add(copyCard, 0, 1)
+    Dim title As New Label With {
+        .Text = "Corel Page Copier",
+        .Font = New Font("Segoe UI", 18.0F, FontStyle.Bold),
+        .ForeColor = Color.FromArgb(25, 35, 52),
+        .AutoSize = True,
+        .Location = New Point(0, 0)
+    }
 
-        Dim selectCard As Panel = CreateCard()
-        Dim selectTitle As Label = CreateSectionTitle("02  Auto Select objek")
-        selectTitle.Location = New Point(16, 14)
-        selectCard.Controls.Add(selectTitle)
-        Dim categoryLabel As New Label With {.Text = "Jenis objek", .AutoSize = True, .Location = New Point(18, 48), .ForeColor = Color.FromArgb(70, 82, 99)}
-        selectCard.Controls.Add(categoryLabel)
-        categoryBox.DropDownStyle = ComboBoxStyle.DropDownList
-        categoryBox.SetBounds(18, 69, 500, 30)
-        categoryBox.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        categoryBox.Items.Clear()
-        categoryBox.Items.AddRange(New Object() {"Teks (Artistik + Paragraf)", "Gambar / Bitmap", "Garis / Kurva terbuka", "Objek vektor (tanpa teks/bitmap/grup)", "Semua objek"})
-        categoryBox.SelectedIndex = 0
-        selectCard.Controls.Add(categoryBox)
-        Dim scopeLabel As New Label With {.Text = "Cakupan pencarian", .AutoSize = True, .Location = New Point(18, 108), .ForeColor = Color.FromArgb(70, 82, 99)}
-        selectCard.Controls.Add(scopeLabel)
-        scopeBox.DropDownStyle = ComboBoxStyle.DropDownList
-        scopeBox.SetBounds(18, 129, 500, 30)
-        scopeBox.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        scopeBox.Items.Clear()
-        scopeBox.Items.AddRange(New Object() {"Halaman aktif", "Pindai semua halaman"})
-        scopeBox.SelectedIndex = 0
-        selectCard.Controls.Add(scopeBox)
-        Dim autoSelect As Button = CreateButton("Select otomatis", True, 500)
-        autoSelect.SetBounds(18, 171, 500, 36)
-        autoSelect.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        AddHandler autoSelect.Click, AddressOf AutoSelectClicked
-        selectCard.Controls.Add(autoSelect)
-        Dim nextMatch As Button = CreateButton("Pilih hasil berikutnya", False, 500)
-        nextMatch.SetBounds(18, 215, 500, 34)
-        nextMatch.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        AddHandler nextMatch.Click, AddressOf NextMatchingPageClicked
-        selectCard.Controls.Add(nextMatch)
-        Dim note As New Label With {.Text = "Pindai semua halaman untuk mencari kecocokan di seluruh dokumen. Hasil dipilih satu halaman setiap kali.", .Location = New Point(18, 257), .Size = New Size(500, 34), .ForeColor = Color.FromArgb(102, 115, 132), .Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right}
-        selectCard.Controls.Add(note)
-        root.Controls.Add(selectCard, 0, 2)
+    Dim subtitle As New Label With {
+        .Text = "Salin objek dan temukan desain antarhalaman",
+        .Font = New Font("Segoe UI", 9.0F),
+        .ForeColor = Color.FromArgb(102, 115, 132),
+        .AutoSize = True,
+        .Location = New Point(2, 34)
+    }
 
-        Dim statusCard As New Panel With {.Dock = DockStyle.Fill, .BackColor = Color.FromArgb(232, 241, 250), .Padding = New Padding(12), .Margin = New Padding(0, 10, 0, 0)}
-        statusLabel.Dock = DockStyle.Fill
-        statusLabel.TextAlign = ContentAlignment.MiddleLeft
-        statusLabel.Font = New Font("Segoe UI", 9.0F)
-        statusLabel.ForeColor = Color.FromArgb(35, 71, 105)
-        statusLabel.Text = "Status: siap. Buka dokumen di CorelDRAW."
-        statusCard.Controls.Add(statusLabel)
-        root.Controls.Add(statusCard, 0, 3)
-        ResumeLayout(True)
-    End Sub
+    sourceLabel.SetBounds(2, 55, 540, 18)
+    sourceLabel.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
+    sourceLabel.AutoEllipsis = True
+    sourceLabel.Font = New Font("Segoe UI", 8.0F)
+    sourceLabel.ForeColor = Color.FromArgb(45, 100, 150)
+
+    header.Controls.AddRange(New Control() {
+        title, subtitle, sourceLabel
+    })
+
+    root.Controls.Add(header, 0, 0)
+
+    ' PANEL 1: COPY HALAMAN
+    Dim copyCard As Panel = CreateCard()
+    copyCard.Margin = New Padding(0, 0, 0, 10)
+
+    Dim copyLayout As New TableLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .ColumnCount = 1,
+        .RowCount = 5,
+        .Padding = New Padding(14),
+        .BackColor = Color.White
+    }
+
+    copyLayout.ColumnStyles.Add(
+        New ColumnStyle(SizeType.Percent, 100.0F)
+    )
+    copyLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 27.0F))
+    copyLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 32.0F))
+    copyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+    copyLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 36.0F))
+    copyLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 40.0F))
+
+    Dim copyTitle As Label = CreateSectionTitle("01  Salin ke halaman")
+    copyTitle.Dock = DockStyle.Fill
+    copyTitle.TextAlign = ContentAlignment.MiddleLeft
+    copyLayout.Controls.Add(copyTitle, 0, 0)
+
+    Dim hint As New Label With {
+        .Text = "Pilih halaman tujuan. Halaman aktif merupakan sumber.",
+        .Dock = DockStyle.Fill,
+        .ForeColor = Color.FromArgb(102, 115, 132),
+        .TextAlign = ContentAlignment.MiddleLeft,
+        .AutoEllipsis = True,
+        .Font = New Font("Segoe UI", 8.5F)
+    }
+    copyLayout.Controls.Add(hint, 0, 1)
+
+    pagesList.Dock = DockStyle.Fill
+    pagesList.Margin = New Padding(0, 2, 0, 8)
+    pagesList.CheckOnClick = True
+    pagesList.IntegralHeight = False
+    pagesList.BorderStyle = BorderStyle.FixedSingle
+    pagesList.BackColor = Color.White
+    pagesList.Font = New Font("Segoe UI", 9.0F)
+    copyLayout.Controls.Add(pagesList, 0, 2)
+
+    Dim pageActions As New FlowLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .FlowDirection = FlowDirection.LeftToRight,
+        .WrapContents = False,
+        .AutoScroll = True,
+        .BackColor = Color.White,
+        .Margin = New Padding(0, 0, 0, 5),
+        .Padding = New Padding(0)
+    }
+
+    Dim refresh As Button = CreateButton("Muat ulang", False, 100)
+    AddHandler refresh.Click, AddressOf RefreshClicked
+
+    Dim all As Button = CreateButton("Pilih semua", False, 100)
+    AddHandler all.Click, Sub() SetAllChecks(True)
+
+    Dim none As Button = CreateButton("Kosongkan", False, 100)
+    AddHandler none.Click, Sub() SetAllChecks(False)
+
+    pageActions.Controls.AddRange(New Control() {
+        refresh, all, none
+    })
+    copyLayout.Controls.Add(pageActions, 0, 3)
+
+    Dim copy As Button = CreateButton(
+        "Salin ke halaman terpilih", True, 200
+    )
+    copy.Dock = DockStyle.Fill
+    copy.Margin = New Padding(0, 2, 0, 0)
+    AddHandler copy.Click, AddressOf CopyClicked
+    copyLayout.Controls.Add(copy, 0, 4)
+
+    copyCard.Controls.Add(copyLayout)
+    root.Controls.Add(copyCard, 0, 1)
+
+    ' PANEL 2: AUTO SELECT
+    Dim selectCard As Panel = CreateCard()
+    selectCard.Margin = New Padding(0, 0, 0, 8)
+
+    Dim selectLayout As New TableLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .ColumnCount = 1,
+        .RowCount = 8,
+        .Padding = New Padding(14),
+        .BackColor = Color.White
+    }
+
+    selectLayout.ColumnStyles.Add(
+        New ColumnStyle(SizeType.Percent, 100.0F)
+    )
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 27.0F))
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 19.0F))
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 31.0F))
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 19.0F))
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 31.0F))
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 37.0F))
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 35.0F))
+    selectLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+
+    Dim selectTitle As Label = CreateSectionTitle("02  Auto Select objek")
+    selectTitle.Dock = DockStyle.Fill
+    selectTitle.TextAlign = ContentAlignment.MiddleLeft
+    selectLayout.Controls.Add(selectTitle, 0, 0)
+
+    Dim categoryLabel As New Label With {
+        .Text = "Jenis objek",
+        .Dock = DockStyle.Fill,
+        .ForeColor = Color.FromArgb(70, 82, 99),
+        .TextAlign = ContentAlignment.MiddleLeft
+    }
+    selectLayout.Controls.Add(categoryLabel, 0, 1)
+
+    categoryBox.DropDownStyle = ComboBoxStyle.DropDownList
+    categoryBox.Dock = DockStyle.Fill
+    categoryBox.Margin = New Padding(0, 0, 0, 3)
+    categoryBox.Items.Clear()
+    categoryBox.Items.AddRange(New Object() {
+        "Teks (Artistik + Paragraf)",
+        "Gambar / Bitmap",
+        "Garis / Kurva terbuka",
+        "Objek vektor (tanpa teks/bitmap/grup)",
+        "Semua objek"
+    })
+    categoryBox.SelectedIndex = 0
+    selectLayout.Controls.Add(categoryBox, 0, 2)
+
+    Dim scopeLabel As New Label With {
+        .Text = "Cakupan pencarian",
+        .Dock = DockStyle.Fill,
+        .ForeColor = Color.FromArgb(70, 82, 99),
+        .TextAlign = ContentAlignment.MiddleLeft
+    }
+    selectLayout.Controls.Add(scopeLabel, 0, 3)
+
+    scopeBox.DropDownStyle = ComboBoxStyle.DropDownList
+    scopeBox.Dock = DockStyle.Fill
+    scopeBox.Margin = New Padding(0, 0, 0, 3)
+    scopeBox.Items.Clear()
+    scopeBox.Items.AddRange(New Object() {
+        "Halaman aktif",
+        "Pindai semua halaman"
+    })
+    scopeBox.SelectedIndex = 0
+    selectLayout.Controls.Add(scopeBox, 0, 4)
+
+    Dim autoSelect As Button = CreateButton(
+        "Select otomatis", True, 200
+    )
+    autoSelect.Dock = DockStyle.Fill
+    autoSelect.Margin = New Padding(0, 3, 0, 3)
+    AddHandler autoSelect.Click, AddressOf AutoSelectClicked
+    selectLayout.Controls.Add(autoSelect, 0, 5)
+
+    Dim nextMatch As Button = CreateButton(
+        "Pilih hasil berikutnya", False, 200
+    )
+    nextMatch.Dock = DockStyle.Fill
+    nextMatch.Margin = New Padding(0, 2, 0, 3)
+    AddHandler nextMatch.Click, AddressOf NextMatchingPageClicked
+    selectLayout.Controls.Add(nextMatch, 0, 6)
+
+    Dim note As New Label With {
+        .Text = "Pindai semua halaman untuk menemukan objek yang cocok. " &
+                "Gunakan tombol hasil berikutnya untuk berpindah halaman. " &
+                "Navigasi berhenti pada hasil terakhir.",
+        .Dock = DockStyle.Fill,
+        .ForeColor = Color.FromArgb(102, 115, 132),
+        .Font = New Font("Segoe UI", 8.0F),
+        .TextAlign = ContentAlignment.MiddleLeft,
+        .AutoEllipsis = True,
+        .Margin = New Padding(0, 3, 0, 0)
+    }
+    selectLayout.Controls.Add(note, 0, 7)
+
+    selectCard.Controls.Add(selectLayout)
+    root.Controls.Add(selectCard, 0, 2)
+
+    ' STATUS
+    Dim statusCard As New Panel With {
+        .Dock = DockStyle.Fill,
+        .BackColor = Color.FromArgb(232, 241, 250),
+        .Padding = New Padding(12, 6, 12, 6),
+        .Margin = New Padding(0, 2, 0, 0)
+    }
+
+    statusLabel.Dock = DockStyle.Fill
+    statusLabel.TextAlign = ContentAlignment.MiddleLeft
+    statusLabel.Font = New Font("Segoe UI", 8.5F)
+    statusLabel.ForeColor = Color.FromArgb(35, 71, 105)
+    statusLabel.AutoEllipsis = True
+    statusLabel.Text = "Status: siap. Buka dokumen di CorelDRAW."
+
+    statusCard.Controls.Add(statusLabel)
+    root.Controls.Add(statusCard, 0, 3)
+
+    ResumeLayout(True)
+End Sub
+
 
     Private Function CreateCard() As Panel
         Return New Panel With {.Dock = DockStyle.Fill, .BackColor = Color.White, .Padding = New Padding(0), .Margin = New Padding(0, 0, 0, 8), .BorderStyle = BorderStyle.FixedSingle}
