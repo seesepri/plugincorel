@@ -122,10 +122,12 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 55 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 75 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
 | `CorelPageCopier/assets/seta-logo-black.png` | varian **default**: glyph gelap untuk latar terang | — |
 | `CorelPageCopier/assets/seta-logo-white.png` | varian putih untuk latar gelap | — |
+| `CorelPageCopier/PresetStore.vb` | preset watermark di `%APPDATA%` (INI, atomik) | ±330 |
+| `CorelPageCopier/BatchLog.vb` | log CSV batch (`;`, UTF-8 BOM, escaping) | ±120 |
 
 ### 4.1 Verifikasi yang sudah dilakukan
 
@@ -350,6 +352,65 @@ Kenapa harus transparan: `Transparency.ApplyUniformTransparency` membuat **selur
 **Verifikasi:** build net48 x64 dengan dua embedded resource — **succeeded, 0 error, 0 warning**; **kedua** PNG di repo ditemukan **utuh** di dalam file .exe (byte-identik); logika pencarian resource diuji langsung (nama manifest `CorelPageCopier.assets.seta-logo-black.png` & `...white.png` terdeteksi, tidak tertukar, bisa dibaca dan bertanda tangan PNG); `tools/static-checks.py` = **55 pemeriksaan**; unit test **77 assertion lulus**.
 
 
+### 4.7 Fase 2 — preset, log CSV, PDF proof (selesai)
+
+Tiga modul baru, semuanya tanpa dependensi tambahan (khusus untuk .NET Framework 4.8 yang tidak punya `System.Text.Json`).
+
+#### (a) Preset watermark di `%APPDATA%` — `PresetStore.vb`
+
+```
+%APPDATA%\CorelPageCopier\presets.ini
+```
+
+Format **INI**, bukan JSON, dengan alasan eksplisit: tanpa NuGet/DLL baru, bisa dibaca & diedit manusia, dan file yang rusak sebagian tidak menjatuhkan aplikasi (baris tak dikenal diabaikan, nilai tidak valid kembali ke default).
+
+```ini
+; Corel Page Copier - watermark presets (v1)
+[preset Klien A]
+Kind=2
+Text=RAHASIA
+UseBundledLogo=1
+BundledLogoWhite=0
+OpacityPercent=35
+Anchor=2
+Tile=1
+TargetPages=2,5
+...
+```
+
+- **Penyimpanan atomik**: tulis ke `presets.ini.tmp` lalu `File.Move` — file lama tidak pernah setengah tertulis.
+- `Upsert` / `Remove` / `Find` dengan nama **case-insensitive**.
+- Nilai multi-baris (teks watermark mengandung newline) di-escape jadi `\n` agar tetap satu baris.
+- UI: baris **Preset** di paling atas dialog — dropdown + tombol **Simpan** (pakai `InputBox`) dan **Hapus**. Memilih preset menerapkan seluruh field ke kontrol (`ApplySettingsToUi`), termasuk varian logo & opsi output.
+
+#### (b) Log CSV batch — `BatchLog.vb`
+
+- File default `watermark-log.csv` di folder batch; bisa diarahkan lewat tombol **Simpan ke...**.
+- Kolom: `Waktu; File; Halaman; Shape; Status; Pesan; Durasi_detik` — satu baris per file + satu baris **RINGKASAN** di akhir batch.
+- Pemisah **`;`** karena Excel dengan regional Indonesia memakai `;` (koma = desimal), jadi file langsung rapi tanpa Import Wizard.
+- **UTF-8 + BOM** agar huruf beraksen/karakter non-ASCII terbaca benar di Excel.
+- `EscapeCell` membungkus sel yang memuat `;`, kutip, newline, atau spasi tepi — nama file klien yang mengandung `;` tetap utuh di satu sel.
+- Kegagalan menulis log **tidak** menghentikan batch (`AppendRow` mengembalikan Boolean).
+
+#### (c) Ekspor PDF proof — `WatermarkEngine`
+
+- Setelah watermark berhasil, `Document.PublishToPDF` menulis `<nama dokumen>_proof.pdf` di samping file aslinya; ada fallback `ExportEx(pdfPath, 2, 0)` bila versi CorelDRAW membutuhkan jalur itu.
+- Dokumen yang belum pernah disimpan → PDF ditaruh di `%TEMP%\CorelPageCopier`.
+- **Penting:** layer watermark di-set `Printable = True`, kalau tidak watermark bisa hilang dari PDF.
+- Kegagalan ekspor dicatat sebagai kegagalan per-file, bukan membatalkan watermark yang sudah terpasang.
+
+#### Verifikasi Fase 2
+
+| Uji | Hasil |
+|---|---|
+| Build net48 x64 (6 file source + 2 resource) | **succeeded, 0 error, 0 warning** |
+| Unit test round-trip preset (semua field, newline, daftar halaman, nama case-insensitive, file rusak, simpan/muat file nyata, .tmp tidak tertinggal) | **lulus** |
+| Unit test CSV (header 7 kolom, escaping `;`/kutip/newline, BOM, header hanya sekali, baris ringkasan) | **lulus** |
+| Total unit test | **126 assertion lulus** |
+| `tools/static-checks.py` | **75 pemeriksaan lulus** |
+| Ekspor PDF & dialog preset di CorelDRAW nyata | belum bisa di sini — checklist §7 no. 20–23 |
+
+
 ---
 
 ## 5. Yang perlu kamu putuskan (open questions)
@@ -373,11 +434,12 @@ Kenapa harus transparan: `Transparency.ApplyUniformTransparency` membuat **selur
 3. ✅ Flag `busy` global di `CopierForm` (`OperationGate`) untuk mencegah klik ganda saat proses berjalan — *selesai (§4.5)*.
 4. ✅ `corelDoc.Unit` dinormalisasi ke mm di `CopyClicked` + verifikasi geometri menggantikan verifikasi jumlah shape — *selesai (§4.4)*.
 
-**Fase 2**
-- Preset watermark tersimpan di `%APPDATA%\CorelPageCopier\watermark.json` (brand klien A, B, …).
-- Log CSV batch (file, halaman, jumlah watermark, status, durasi) + tombol "buka folder hasil".
-- Ekspor PDF proof ber-watermark.
-- Watermark per-halaman berbeda teks (mis. nomor order dari nama file / `Document.FileName`).
+**Fase 2** ✅ sebagian besar selesai (§4.7)
+- ✅ Preset watermark tersimpan di `%APPDATA%\CorelPageCopier\presets.ini`.
+- ✅ Log CSV batch (file, halaman, jumlah shape, status, pesan, durasi) + baris ringkasan.
+- ✅ Ekspor PDF proof ber-watermark.
+- ⬜ Tombol "buka folder hasil" setelah batch (nice-to-have).
+- ⬜ Watermark per-halaman berbeda teks (mis. nomor order dari nama file).
 
 **Fase 3**
 - Pindah ke **SDK-style project** (`net48` + `UseWindowsForms`) supaya tidak perlu daftar `<Compile>` manual lagi.
@@ -411,6 +473,10 @@ Kenapa harus transparan: `Transparency.ApplyUniformTransparency` membuat **selur
 | 17 | Saat proses berjalan, tekan X (tutup jendela) | jendela tidak tertutup, muncul pesan bahwa operasi masih berjalan |
 | 18 | Setelah operasi selesai / gagal di tengah | semua tombol aktif kembali, kursor normal, aplikasi bisa dipakai lagi |
 | 19 | Batalkan dengan exception di tengah (mis. tutup dokumen saat copy) | laporan error muncul, UI tetap responsif (kunci busy tidak tertinggal) |
+| 20 | Simpan preset "Klien A", tutup aplikasi, buka lagi | preset muncul di dropdown dan mengisi semua field dengan benar |
+| 21 | Centang "Ekspor PDF proof" lalu Terapkan | muncul `<dokumen>_proof.pdf` di folder yang sama, watermark terlihat di PDF |
+| 22 | Batch 5 file dengan log CSV aktif | `watermark-log.csv` berisi header + 5 baris + 1 RINGKASAN; buka di Excel → kolom rapi, tidak menumpuk di satu sel |
+| 23 | Nama file klien mengandung `;` atau kutip | tetap satu sel di CSV (tidak menggeser kolom) |
 
 ---
 

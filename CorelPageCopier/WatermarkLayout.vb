@@ -65,8 +65,50 @@ Public Class WatermarkSettings
     Public GroupWithPrefix As Boolean = True        ' grup teks+logo jadi 1 shape bergrup
     Public LockLayer As Boolean = False             ' kunci layer setelah diterapkan
 
+    ' --- Logo bawaan (varian tertanam di aplikasi) ---------------------------
+    Public UseBundledLogo As Boolean = True         ' True = pakai PNG bawaan, bukan LogoPath
+    Public BundledLogoWhite As Boolean = False      ' False = varian hitam (default)
+
+    ' --- Output tambahan (Fase 2) -------------------------------------------
+    Public ExportProofPdf As Boolean = False        ' ekspor PDF proof setelah watermark
+    Public ProofPdfSuffix As String = "_proof"      ' nama file: <dokumen>_proof.pdf
+    Public WriteCsvLog As Boolean = False           ' catat hasil ke CSV
+    Public CsvLogPath As String = ""                ' "" = watermark-log.csv di folder batch
+
     ' --- Tambahan ------------------------------------------------------------
     Public PerPageText As Boolean = False           ' tambahkan "Hal. n" di belakang teks
+
+    ''' <summary>Salinan independen (dipakai preset & tampilan, agar tidak saling menimpa).</summary>
+    Public Function Clone() As WatermarkSettings
+        Dim copy As New WatermarkSettings()
+        copy.Kind = Kind
+        copy.Text = Text
+        copy.FontName = FontName
+        copy.FontSize = FontSize
+        copy.Color = Color
+        copy.LogoPath = LogoPath
+        copy.LogoWidthMm = LogoWidthMm
+        copy.UseBundledLogo = UseBundledLogo
+        copy.BundledLogoWhite = BundledLogoWhite
+        copy.OpacityPercent = OpacityPercent
+        copy.RotationDeg = RotationDeg
+        copy.Anchor = Anchor
+        copy.MarginMm = MarginMm
+        copy.Tile = Tile
+        copy.TileSpacingXMm = TileSpacingXMm
+        copy.TileSpacingYMm = TileSpacingYMm
+        copy.AllPages = AllPages
+        copy.TargetPages = New List(Of Integer)(TargetPages)
+        copy.ReplaceExisting = ReplaceExisting
+        copy.LayerName = LayerName
+        copy.LockLayer = LockLayer
+        copy.PerPageText = PerPageText
+        copy.ExportProofPdf = ExportProofPdf
+        copy.ProofPdfSuffix = ProofPdfSuffix
+        copy.WriteCsvLog = WriteCsvLog
+        copy.CsvLogPath = CsvLogPath
+        Return copy
+    End Function
 
     ''' <summary>Label untuk ComboBox jangkar (urutan = nilai enum WatermarkAnchor).</summary>
     Public Shared Function AnchorLabels() As String()
@@ -94,10 +136,15 @@ Public Class WatermarkSettings
         End If
 
         If Kind = WatermarkKind.LogoOnly OrElse Kind = WatermarkKind.TextAndLogo Then
-            If LogoPath Is Nothing OrElse LogoPath.Trim().Length = 0 Then
-                errors.Add("File logo belum dipilih.")
-            ElseIf Not File.Exists(LogoPath) Then
-                errors.Add("File logo tidak ditemukan: " & LogoPath)
+            If Not UseBundledLogo Then
+                If LogoPath Is Nothing OrElse LogoPath.Trim().Length = 0 Then
+                    errors.Add("File logo belum dipilih.")
+                ElseIf Not File.Exists(LogoPath) Then
+                    errors.Add("File logo tidak ditemukan: " & LogoPath)
+                End If
+            ElseIf LogoPath IsNot Nothing AndAlso LogoPath.Trim().Length > 0 AndAlso Not File.Exists(LogoPath) Then
+                ' Logo bawaan: file hasil ekstraksi hilang (mis. folder TEMP dibersihkan).
+                errors.Add("Logo bawaan belum siap (" & LogoPath & "). Buka ulang dialog watermark.")
             End If
             If LogoWidthMm < 0 OrElse LogoWidthMm > 5000 Then
                 errors.Add("Lebar logo harus antara 0 dan 5000 mm (0 = ukuran asli).")
@@ -141,6 +188,13 @@ Public Class WatermarkSettings
             sb.Append(" | jangkar " & AnchorLabels()(CInt(Anchor)))
         End If
         sb.Append(" | layer """ & LayerName & """")
+        If Kind = WatermarkKind.LogoOnly OrElse Kind = WatermarkKind.TextAndLogo Then
+            If UseBundledLogo Then
+                sb.Append(" | logo bawaan " & If(BundledLogoWhite, "putih", "hitam"))
+            End If
+        End If
+        If ExportProofPdf Then sb.Append(" | +PDF proof")
+        If WriteCsvLog Then sb.Append(" | +log CSV")
         Return sb.ToString()
     End Function
 End Class

@@ -51,6 +51,12 @@ Public Class WatermarkDialog
 
     Private ReadOnly bundledLogoCheck As New CheckBox()
     Private ReadOnly logoVariantBox As New ComboBox()
+    Private ReadOnly presetBox As New ComboBox()
+    Private ReadOnly proofPdfCheck As New CheckBox()
+    Private ReadOnly csvLogCheck As New CheckBox()
+    Private ReadOnly csvPathBox As New TextBox()
+    Private ReadOnly presetStore As New PresetStore()
+    Private presetList As New List(Of WatermarkPreset)()
     Private ReadOnly preselectedPages As New List(Of Integer)()
 
     Private selectedColor As Color = Color.FromArgb(120, 120, 120)
@@ -135,6 +141,32 @@ Public Class WatermarkDialog
         }
         grid.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 160.0F))
         grid.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+
+        ' --- PRESET (Fase 2) -------------------------------------------------
+        Dim presetRow As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .ColumnCount = 2, .Margin = New Padding(0)}
+        presetRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        presetRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 200.0F))
+
+        presetBox.DropDownStyle = ComboBoxStyle.DropDownList
+        presetBox.Dock = DockStyle.Fill
+        presetBox.Margin = New Padding(0, 3, 6, 3)
+        AddHandler presetBox.SelectedIndexChanged, AddressOf PresetSelected
+
+        Dim presetButtons As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .WrapContents = False, .Margin = New Padding(0)}
+        Dim savePreset As Button = FlatButton("Simpan", False)
+        savePreset.Width = 92
+        savePreset.Height = 26
+        AddHandler savePreset.Click, AddressOf SavePresetClicked
+        Dim deletePreset As Button = FlatButton("Hapus", False)
+        deletePreset.Width = 88
+        deletePreset.Height = 26
+        AddHandler deletePreset.Click, AddressOf DeletePresetClicked
+        presetButtons.Controls.Add(savePreset)
+        presetButtons.Controls.Add(deletePreset)
+
+        presetRow.Controls.Add(presetBox, 0, 0)
+        presetRow.Controls.Add(presetButtons, 1, 0)
+        AddRow(grid, "Preset", presetRow)
 
         ' Jenis
         kindBox.DropDownStyle = ComboBoxStyle.DropDownList
@@ -297,6 +329,11 @@ Public Class WatermarkDialog
         perPageCheck.Margin = New Padding(0, 4, 0, 0)
         AddRow(grid, "Nomor halaman", perPageCheck)
 
+        proofPdfCheck.Text = "Ekspor PDF proof (<nama>_proof.pdf), watermark ikut tercetak"
+        proofPdfCheck.AutoSize = True
+        proofPdfCheck.Margin = New Padding(0, 4, 0, 0)
+        AddRow(grid, "PDF proof", proofPdfCheck)
+
         lockLayerCheck.Text = "Kunci layer setelah diterapkan (tidak bisa diklik tak sengaja)"
         lockLayerCheck.AutoSize = True
         lockLayerCheck.Margin = New Padding(0, 4, 0, 0)
@@ -338,6 +375,26 @@ Public Class WatermarkDialog
         saveInPlaceCheck.AutoSize = True
         saveInPlaceCheck.Margin = New Padding(0, 4, 0, 0)
         AddRow(grid, "Simpan", saveInPlaceCheck)
+
+        csvLogCheck.Text = "Tulis log CSV (Excel siap pakai; default: watermark-log.csv di folder batch)"
+        csvLogCheck.AutoSize = True
+        csvLogCheck.Margin = New Padding(0, 6, 0, 0)
+        AddHandler csvLogCheck.CheckedChanged, AddressOf CsvLogToggled
+        AddRow(grid, "Log CSV", csvLogCheck)
+
+        Dim csvRow As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .ColumnCount = 2, .Margin = New Padding(0)}
+        csvRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        csvRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 92.0F))
+        csvPathBox.Dock = DockStyle.Fill
+        csvPathBox.Margin = New Padding(0, 3, 6, 3)
+        csvPathBox.Text = PresetStore.DefaultDirectory() & "\watermark-log.csv"
+        Dim browseCsv As Button = FlatButton("Simpan ke...", False)
+        browseCsv.Dock = DockStyle.Fill
+        browseCsv.Margin = New Padding(0, 3, 0, 3)
+        AddHandler browseCsv.Click, AddressOf PickCsvPath
+        csvRow.Controls.Add(csvPathBox, 0, 0)
+        csvRow.Controls.Add(browseCsv, 1, 0)
+        AddRow(grid, "Lokasi log", csvRow)
 
         Dim batchRow As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .WrapContents = False, .Margin = New Padding(0, 6, 0, 0)}
         Dim batchButton As Button = FlatButton("Jalankan batch", False)
@@ -439,6 +496,9 @@ Public Class WatermarkDialog
     End Sub
 
     Private Sub LoadDefaults()
+        LoadPresetList()
+        csvPathBox.Enabled = csvLogCheck.Checked
+        csvPathBox.ReadOnly = Not csvLogCheck.Checked
         If bundledLogoCheck.Checked Then
             logoPathBox.Text = BundledLogoCaption()
             logoPathBox.ReadOnly = True
@@ -541,6 +601,150 @@ Public Class WatermarkDialog
     Private Function IsBundledCaption(value As String) As Boolean
         Return value IsNot Nothing AndAlso value.StartsWith("(logo bawaan SETA", StringComparison.Ordinal)
     End Function
+
+    ' ========================================================================
+    '  PRESET (Fase 2)
+    ' ========================================================================
+
+    Private Sub LoadPresetList(Optional selectName As String = Nothing)
+        Try
+            presetList = presetStore.Load()
+            presetBox.Items.Clear()
+            presetBox.Items.Add("(tanpa preset)")
+            For Each preset As WatermarkPreset In presetList
+                presetBox.Items.Add(preset.Name)
+            Next
+            presetBox.SelectedIndex = 0
+            If selectName IsNot Nothing Then
+                For i As Integer = 0 To presetBox.Items.Count - 1
+                    If String.Equals(CStr(presetBox.Items(i)), selectName, StringComparison.OrdinalIgnoreCase) Then
+                        presetBox.SelectedIndex = i
+                        Exit For
+                    End If
+                Next
+            End If
+        Catch
+        End Try
+    End Sub
+
+    Private Sub PresetSelected(sender As Object, e As EventArgs)
+        If presetBox.SelectedIndex <= 0 Then
+            statusLabel.Text = "Preset: tidak dipakai (pengaturan manual)."
+            Return
+        End If
+        Dim name As String = CStr(presetBox.SelectedItem)
+        Dim preset As WatermarkPreset = PresetStore.Find(presetList, name)
+        If preset Is Nothing Then Return
+        ApplySettingsToUi(preset.Settings)
+        statusLabel.Text = "Preset dimuat: " & name
+    End Sub
+
+    Private Sub SavePresetClicked(sender As Object, e As EventArgs)
+        Dim suggested As String = If(presetBox.SelectedIndex > 0, CStr(presetBox.SelectedItem), "Preset saya")
+        Dim name As String = InputBox("Nama preset:", "Simpan preset watermark", suggested)
+        If name Is Nothing Then Return
+        name = name.Trim()
+        If name.Length = 0 Then
+            MessageBox.Show("Nama preset tidak boleh kosong.", "Preset", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Dim settings As WatermarkSettings = ReadSettings()
+        Dim replaced As Boolean = PresetStore.Upsert(presetList, name, settings)
+        If presetStore.Save(presetList) Then
+            LoadPresetList(name)
+            statusLabel.Text = If(replaced, "Preset diperbarui: ", "Preset disimpan: ") & name
+        Else
+            MessageBox.Show("Preset gagal disimpan ke:" & Environment.NewLine & presetStore.FilePath,
+                            "Preset", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End If
+    End Sub
+
+    Private Sub DeletePresetClicked(sender As Object, e As EventArgs)
+        If presetBox.SelectedIndex <= 0 Then
+            MessageBox.Show("Pilih preset yang akan dihapus.", "Preset", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        Dim name As String = CStr(presetBox.SelectedItem)
+        If MessageBox.Show("Hapus preset """ & name & """?", "Preset", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
+        If PresetStore.Remove(presetList, name) AndAlso presetStore.Save(presetList) Then
+            LoadPresetList()
+            statusLabel.Text = "Preset dihapus: " & name
+        End If
+    End Sub
+
+    ''' <summary>Terapkan preset ke kontrol UI (kebalikan dari ReadSettings).</summary>
+    Private Sub ApplySettingsToUi(s As WatermarkSettings)
+        If s Is Nothing Then Return
+        Try
+            kindBox.SelectedIndex = CInt(s.Kind)
+            textBox.Text = s.Text
+            fontBox.Text = s.FontName
+            fontSizeBox.Value = ClampDecimal(fontSizeBox, CDec(s.FontSize))
+            selectedColor = s.Color
+            colorPanel.BackColor = s.Color
+
+            bundledLogoCheck.Checked = s.UseBundledLogo
+            logoVariantBox.SelectedIndex = If(s.BundledLogoWhite, 1, 0)
+            logoPathBox.Text = If(s.UseBundledLogo, BundledLogoCaption(), s.LogoPath)
+            logoPathBox.ReadOnly = s.UseBundledLogo
+            logoVariantBox.Enabled = s.UseBundledLogo
+            logoWidthBox.Value = ClampDecimal(logoWidthBox, CDec(s.LogoWidthMm))
+
+            opacityBox.Value = ClampDecimal(opacityBox, CDec(s.OpacityPercent))
+            rotationBox.Value = ClampDecimal(rotationBox, CDec(s.RotationDeg))
+            anchorBox.SelectedIndex = CInt(s.Anchor)
+            marginBox.Value = ClampDecimal(marginBox, CDec(s.MarginMm))
+            tileCheck.Checked = s.Tile
+            tileXBox.Value = ClampDecimal(tileXBox, CDec(s.TileSpacingXMm))
+            tileYBox.Value = ClampDecimal(tileYBox, CDec(s.TileSpacingYMm))
+            replaceCheck.Checked = s.ReplaceExisting
+            perPageCheck.Checked = s.PerPageText
+            lockLayerCheck.Checked = s.LockLayer
+            proofPdfCheck.Checked = s.ExportProofPdf
+            layerNameBox.Text = s.LayerName
+
+            ' Cakupan halaman: daftar halaman pada preset hanya valid bila halaman
+            ' itu ada di dokumen yang sedang dibuka.
+            If s.AllPages Then
+                scopeBox.SelectedIndex = 0
+            Else
+                scopeBox.SelectedIndex = If(preselectedPages.Count > 0, 2, 1)
+            End If
+        Catch
+        End Try
+    End Sub
+
+    Private Function ClampDecimal(box As NumericUpDown, value As Decimal) As Decimal
+        If value < box.Minimum Then Return box.Minimum
+        If value > box.Maximum Then Return box.Maximum
+        Return value
+    End Function
+
+    ' ========================================================================
+    '  LOG CSV (Fase 2)
+    ' ========================================================================
+
+    Private Sub CsvLogToggled(sender As Object, e As EventArgs)
+        Try
+            csvPathBox.ReadOnly = Not csvLogCheck.Checked
+            csvPathBox.Enabled = csvLogCheck.Checked
+        Catch
+        End Try
+    End Sub
+
+    Private Sub PickCsvPath(sender As Object, e As EventArgs)
+        Using dlg As New SaveFileDialog()
+            dlg.Title = "Lokasi log CSV"
+            dlg.Filter = "CSV|*.csv"
+            dlg.FileName = "watermark-log.csv"
+            Try
+                dlg.InitialDirectory = Path.GetDirectoryName(csvPathBox.Text)
+            Catch
+            End Try
+            If dlg.ShowDialog(Me) = DialogResult.OK Then csvPathBox.Text = dlg.FileName
+        End Using
+    End Sub
 
     Private Sub PickColor(sender As Object, e As EventArgs)
         Using dlg As New ColorDialog()
@@ -693,7 +897,12 @@ Public Class WatermarkDialog
         s.FontName = If(fontBox.Text.Trim().Length = 0, "Segoe UI", fontBox.Text.Trim())
         s.FontSize = CSng(fontSizeBox.Value)
         s.Color = selectedColor
+        s.UseBundledLogo = bundledLogoCheck.Checked
+        s.BundledLogoWhite = (logoVariantBox.SelectedIndex = 1)
         s.LogoPath = If(bundledLogoCheck.Checked, EnsureBundledLogoFile(), logoPathBox.Text.Trim())
+        s.ExportProofPdf = proofPdfCheck.Checked
+        s.WriteCsvLog = csvLogCheck.Checked
+        s.CsvLogPath = csvPathBox.Text.Trim()
         s.LogoWidthMm = CDbl(logoWidthBox.Value)
         s.OpacityPercent = CInt(opacityBox.Value)
         s.RotationDeg = CDbl(rotationBox.Value)

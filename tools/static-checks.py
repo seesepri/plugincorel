@@ -8,6 +8,7 @@ Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   #3  Satuan dokumen dinormalisasi ke mm selama operasi dan dipulihkan setelahnya.
   Fase 1.5  Semua operasi panjang dijaga flag busy (anti re-entrancy DoEvents).
   UI        Tombol "Watermark..." ter-hook ke WatermarkDialog + logo bawaan tertanam.
+  Fase 2    Preset %APPDATA%, log CSV batch, ekspor PDF proof.
 
 Pakai:  python3 tools/static-checks.py
 Exit code 0 = semua lulus, 1 = ada pelanggaran.
@@ -24,6 +25,8 @@ files = {
     "layout": os.path.join(SRC, "WatermarkLayout.vb"),
     "engine": os.path.join(SRC, "WatermarkEngine.vb"),
     "dialog": os.path.join(SRC, "WatermarkDialog.vb"),
+    "preset": os.path.join(SRC, "PresetStore.vb"),
+    "batchlog": os.path.join(SRC, "BatchLog.vb"),
     "vbproj": os.path.join(SRC, "CorelPageCopier.vbproj"),
 }
 
@@ -157,8 +160,39 @@ def main():
     check("seta-logo-black.png" in vbproj and "seta-logo-white.png" in vbproj,
           "kedua varian logo terdaftar sebagai EmbeddedResource")
 
+    print("Fase 2 - preset, log CSV, PDF proof:")
+    dialog_src = read("dialog")
+    engine_src = engine
+    preset_src = read("preset")
+    check("Class PresetStore" in preset_src and "Class WatermarkPreset" in preset_src,
+          "PresetStore & WatermarkPreset tersedia")
+    check('FolderName As String = "CorelPageCopier"' in preset_src, "preset disimpan di folder %APPDATA%\\CorelPageCopier")
+    check("SpecialFolder.ApplicationData" in preset_src, "memakai %APPDATA% (bukan path hardcode)")
+    check("File.Move(tempPath, _filePath)" in preset_src, "penyimpanan atomik via .tmp")
+    check("Function Serialize" in preset_src and "Function Deserialize" in preset_src,
+          "serialisasi/parse murni (bisa diuji unit)")
+    check("presetBox" in dialog_src and "SavePresetClicked" in dialog_src,
+          "UI preset: dropdown + tombol Simpan")
+    check("DeletePresetClicked" in dialog_src, "UI preset: tombol Hapus")
+    check("ApplySettingsToUi" in dialog_src, "memilih preset menerapkan ke seluruh kontrol")
+
+    log_src = read("batchlog")
+    check("Class BatchLog" in log_src, "BatchLog tersedia")
+    check("Delimiter As Char = \";\"c" in log_src, "pemisah ';' (ramah Excel Indonesia)")
+    check("New UTF8Encoding(True)" in log_src, "UTF-8 + BOM agar Excel benar membaca encoding")
+    check("Function EscapeCell" in log_src, "sel CSV di-escape (pemisah/kutip/newline)")
+    check("BatchLog.AppendRow" in engine_src, "engine menulis baris log")
+    check("SummaryEntry" in engine_src, "baris ringkasan batch ikut dicatat")
+
+    check("PublishToPDF" in engine_src, "ekspor PDF lewat Document.PublishToPDF")
+    check("ExportEx" in engine_src, "fallback ekspor PDF lewat ExportEx")
+    check("layer.Printable = True" in engine_src, "layer watermark printable agar ikut ke PDF")
+    check("proofPdfCheck" in dialog_src and "csvLogCheck" in dialog_src,
+          "UI punya opsi PDF proof dan log CSV")
+
     print("Build config:")
-    for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb"):
+    for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb",
+                 "PresetStore.vb", "BatchLog.vb"):
         check(name in vbproj, name + " terdaftar di <Compile Include>")
 
     print()

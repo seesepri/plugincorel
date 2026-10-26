@@ -13,6 +13,7 @@ Option Infer On
 
 Imports System
 Imports System.Collections.Generic
+Imports System.Diagnostics
 Imports System.Drawing
 Imports System.IO
 Imports System.Text
@@ -34,6 +35,9 @@ Public Class WatermarkResult
     Public Failures As New List(Of String)()
     Public Errors As New List(Of String)()
     Public Log As New List(Of String)()
+    Public ProofPdfFiles As New List(Of String)()
+    Public LogRowsWritten As Integer = 0
+    Public DurationSeconds As Double = 0
 
     Public ReadOnly Property Ok As Boolean
         Get
@@ -49,6 +53,8 @@ Public Class WatermarkResult
         Failures.AddRange(other.Failures)
         Errors.AddRange(other.Errors)
         Log.AddRange(other.Log)
+        ProofPdfFiles.AddRange(other.ProofPdfFiles)
+        LogRowsWritten += other.LogRowsWritten
     End Sub
 
     Public Function ToReport() As String
@@ -63,6 +69,13 @@ Public Class WatermarkResult
         sb.AppendLine("Halaman diproses : " & PagesPassed)
         sb.AppendLine("Shape dibuat     : " & ShapesCreated)
         If DocumentsTouched > 0 Then sb.AppendLine("Dokumen tersentuh : " & DocumentsTouched)
+        If ProofPdfFiles.Count > 0 Then
+            sb.AppendLine("PDF proof        : " & ProofPdfFiles.Count & " file")
+            For Each pdf As String In ProofPdfFiles
+                sb.AppendLine("  - " & pdf)
+            Next
+        End If
+        If LogRowsWritten > 0 Then sb.AppendLine("Baris log CSV    : " & LogRowsWritten)
         sb.AppendLine("Kegagalan        : " & Failures.Count)
         If Failures.Count > 0 Then
             sb.AppendLine()
@@ -110,6 +123,7 @@ Public Class WatermarkEngine
     ''' </summary>
     Public Function ApplyToDocument(doc As Object, settings As WatermarkSettings) As WatermarkResult
         Dim localResult As New WatermarkResult()
+        Dim documentTimer As Stopwatch = Stopwatch.StartNew()
 
         Dim validation As List(Of String) = settings.Validate()
         If validation.Count > 0 Then
@@ -217,8 +231,101 @@ Public Class WatermarkEngine
             End Try
         End Try
 
+        documentTimer.Stop()
+        localResult.DurationSeconds = documentTimer.Elapsed.TotalSeconds
+
+        ' --- Output tambahan (Fase 2) -------------------------------------
+        If localResult.PagesPassed > 0 Then
+            If settings.ExportProofPdf Then
+                Dim pdfPath As String = TryPublishProofPdf(doc, settings, localResult)
+                If pdfPath IsNot Nothing Then localResult.ProofPdfFiles.Add(pdfPath)
+            End If
+            If settings.WriteCsvLog Then
+                Dim entry As New BatchLogEntry()
+                entry.FileName = SafeDocumentName(doc)
+                entry.Pages = localResult.PagesPassed
+                entry.Shapes = localResult.ShapesCreated
+                entry.Status = If(localResult.Ok, "OK", "SEBAGIAN")
+                entry.Message = settings.Describe()
+                If BatchLog.AppendRow(ResolveCsvPath(settings, Nothing), entry) Then
+                    localResult.LogRowsWritten += 1
+                End If
+            End If
+        End If
+
         _result.Merge(localResult)
         Return localResult
+    End Function
+
+    ' ========================================================================
+    '  OUTPUT: PDF PROOF
+    ' ========================================================================
+
+    ''' <summary>
+    ''' Ekspor PDF proof ber-watermark ke samping file dokumen (<nama>_proof.pdf).
+    ''' Mengembalikan path hasil, atau Nothing bila gagal (dicatat sebagai kegagalan).
+    ''' </summary>
+    Private Function TryPublishProofPdf(doc As Object, settings As WatermarkSettings,
+                                        localResult As WatermarkResult) As String
+        Dim sourcePath As String = ""
+        Try
+            sourcePath = CStr(doc.FilePath)
+        Catch
+        End Try
+
+        Dim folder As String
+        Dim baseName As String
+        If String.IsNullOrEmpty(sourcePath) Then
+            ' Dokumen belum pernah disimpan: taruh di folder temp agar tetap ada hasilnya.
+            folder = Path.Combine(Path.GetTempPath(), "CorelPageCopier")
+            baseName = "dokumen"
+        Else
+            folder = Path.GetDirectoryName(sourcePath)
+            baseName = Path.GetFileNameWithoutExtension(sourcePath)
+        End If
+
+        Dim suffix As String = If(String.IsNullOrEmpty(settings.ProofPdfSuffix), "_proof", settings.ProofPdfSuffix)
+        Dim pdfPath As String = Path.Combine(folder, baseName & suffix & ".pdf")
+
+        Try
+            Directory.CreateDirectory(folder)
+            doc.PublishToPDF(pdfPath)
+            Report("PDF proof: " & pdfPath)
+            Return pdfPath
+        Catch ex As Exception
+            ' Fallback: ExportEx dengan filter PDF (beberapa versi butuh ini).
+            Try
+                doc.ExportEx(pdfPath, 2, 0)   ' 2 = cdrFilterPDF
+                Report("PDF proof (ExportEx): " & pdfPath)
+                Return pdfPath
+            Catch
+                localResult.Failures.Add("PDF proof gagal dibuat (" & Path.GetFileName(pdfPath) & "): " & ex.Message)
+                Return Nothing
+            End Try
+        End Try
+    End Function
+
+    Private Function SafeDocumentName(doc As Object) As String
+        Try
+            Dim p As String = CStr(doc.FilePath)
+            If Not String.IsNullOrEmpty(p) Then Return Path.GetFileName(p)
+        Catch
+        End Try
+        Return "(dokumen aktif)"
+    End Function
+
+    ''' <summary>Path CSV: dari setting, atau watermark-log.csv di folder file/dokumen.</summary>
+    Private Function ResolveCsvPath(settings As WatermarkSettings, sourceFile As String) As String
+        If settings IsNot Nothing AndAlso Not String.IsNullOrEmpty(settings.CsvLogPath) Then
+            Return settings.CsvLogPath
+        End If
+        Dim folder As String = ""
+        If Not String.IsNullOrEmpty(sourceFile) Then
+            folder = Path.GetDirectoryName(sourceFile)
+        Else
+            folder = Path.Combine(Path.GetTempPath(), "CorelPageCopier")
+        End If
+        Return BatchLog.CsvPathFor(folder)
     End Function
 
     ' ========================================================================
@@ -378,6 +485,10 @@ Public Class WatermarkEngine
 
         files.Sort(StringComparer.OrdinalIgnoreCase)
         Report("Batch: " & files.Count & " file .cdr ditemukan di " & folder)
+        Dim batchTimer As Stopwatch = Stopwatch.StartNew()
+        Dim csvPath As String = ResolveCsvPath(settings, Path.Combine(folder, "x.cdr"))
+        Dim okFiles As Integer = 0
+        Dim failedFiles As Integer = 0
 
         Dim index As Integer = 0
         For Each file As String In files
@@ -414,8 +525,32 @@ Public Class WatermarkEngine
                     localResult.Failures.Add(Path.GetFileName(file) & ": gagal menyimpan — " & saveEx.Message)
                 End Try
 
+                Dim fileOk As Boolean = partResult.Ok AndAlso partResult.PagesPassed > 0
+                If fileOk Then okFiles += 1 Else failedFiles += 1
+
+                If settings.WriteCsvLog Then
+                    Dim entry As New BatchLogEntry()
+                    entry.FileName = Path.GetFileName(file)
+                    entry.Pages = partResult.PagesPassed
+                    entry.Shapes = partResult.ShapesCreated
+                    entry.Status = If(fileOk, "OK", "GAGAL")
+                    entry.Message = If(partResult.Failures.Count = 0,
+                                       settings.Describe(),
+                                       String.Join(" / ", partResult.Failures.ToArray()))
+                    entry.DurationSeconds = partResult.DurationSeconds
+                    If BatchLog.AppendRow(csvPath, entry) Then localResult.LogRowsWritten += 1
+                End If
+
             Catch ex As Exception
+                failedFiles += 1
                 localResult.Failures.Add(Path.GetFileName(file) & ": " & ex.Message)
+                If settings.WriteCsvLog AndAlso Not String.IsNullOrEmpty(settings.CsvLogPath) Then
+                    Dim entry As New BatchLogEntry()
+                    entry.FileName = Path.GetFileName(file)
+                    entry.Status = "GAGAL"
+                    entry.Message = ex.Message
+                    If BatchLog.AppendRow(csvPath, entry) Then localResult.LogRowsWritten += 1
+                End If
             Finally
                 Try
                     If doc IsNot Nothing Then doc.Close()
@@ -423,6 +558,14 @@ Public Class WatermarkEngine
                 End Try
             End Try
         Next
+
+        batchTimer.Stop()
+        If settings.WriteCsvLog Then
+            If BatchLog.AppendRow(csvPath, BatchLog.SummaryEntry(settings.Describe(), files.Count, okFiles, failedFiles, batchTimer.Elapsed.TotalSeconds)) Then
+                localResult.LogRowsWritten += 1
+            End If
+            Report("Log CSV: " & csvPath)
+        End If
 
         _result.Merge(localResult)
         Return localResult
@@ -463,6 +606,7 @@ Public Class WatermarkEngine
         Try
             layer.Editable = True
             layer.Visible = True
+            layer.Printable = True      ' wajib agar ikut terekspor ke PDF
         Catch
         End Try
         ' Pastikan layer watermark ada di atas objek desain.

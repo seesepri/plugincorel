@@ -35,6 +35,8 @@
     <Compile Include="WatermarkLayout.vb" />
     <Compile Include="WatermarkEngine.vb" />
     <Compile Include="WatermarkDialog.vb" />
+    <Compile Include="PresetStore.vb" />
+    <Compile Include="BatchLog.vb" />
   </ItemGroup>
   <ItemGroup>
     <!-- Logo bawaan untuk fitur watermark (dua varian warna, tertanam di EXE). -->
