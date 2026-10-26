@@ -25,6 +25,7 @@ Public Module WatermarkCdrConst
     Public Const CdrMergeNormal As Integer = 0            ' cdrMergeMode.cdrMergeNormal
     Public Const CdrGroupShape As Integer = 7             ' cdrShapeType.cdrGroupShape
     Public Const CdrTextShape As Integer = 6              ' cdrShapeType.cdrTextShape
+    Public Const CdrBitmapShape As Integer = 2            ' cdrShapeType.cdrBitmapShape
 End Module
 
 ''' <summary>Hasil satu operasi watermark (untuk dialog laporan + log CSV).</summary>
@@ -420,7 +421,7 @@ Public Class WatermarkEngine
 
         ' --- 2. Objek logo ---------------------------------------------------
         If settings.Kind = WatermarkKind.LogoOnly OrElse settings.Kind = WatermarkKind.TextAndLogo Then
-            Dim logoShape As Object = ImportLogo(layer, settings.LogoPath)
+            Dim logoShape As Object = ImportLogo(doc, layer, settings.LogoPath)
             logoShape.Name = WatermarkLayout.ShapePrefix & "LOGO"
             StyleObject(logoShape, settings)
             created += PlaceObject(logoShape, pageWidth, pageHeight,
@@ -825,31 +826,199 @@ Public Class WatermarkEngine
         End If
     End Function
 
-    ''' <summary>Impor file logo/gambar ke layer, dengan beberapa strategi fallback.</summary>
-    Private Function ImportLogo(layer As Object, filePath As String) As Object
-        Dim shape As Object = Nothing
-        Dim lastMessage As String = ""
-
+    ''' <summary>
+    ''' Filter impor sesuai ekstensi file. Nilai berasal dari enum cdrFilter
+    ''' CorelDRAW (stabil lintas versi); 0 = cdrAutoSense.
+    ''' </summary>
+    Public Shared Function FilterForFile(filePath As String) As Integer
+        Dim ext As String = ""
         Try
-            shape = layer.Import(filePath)
-        Catch ex As Exception
-            lastMessage = ex.Message
+            ext = Path.GetExtension(If(filePath, "")).ToLowerInvariant()
+        Catch
+            ext = ""
         End Try
+        Select Case ext
+            Case ".png" : Return 802                    ' cdrPNG
+            Case ".jpg", ".jpeg", ".jpe" : Return 774   ' cdrJPEG
+            Case ".tif", ".tiff" : Return 772           ' cdrTIFF
+            Case ".bmp" : Return 769                    ' cdrBMP
+            Case ".gif" : Return 773                    ' cdrGIF
+            Case ".psd" : Return 788                    ' cdrPSD
+            Case Else : Return 0                        ' cdrAutoSense
+        End Select
+    End Function
 
+    ''' <summary>
+    ''' Impor file logo ke layer, dengan beberapa strategi berurutan.
+    '''
+    ''' PENTING (bug yang diperbaiki): pada object model CorelDRAW,
+    '''   - Layer.Import(...)   adalah Sub -> TIDAK mengembalikan shape;
+    '''   - Layer.ImportEx(...) mengembalikan ImportFilter, BUKAN shape, dan objek
+    '''     baru benar-benar masuk halaman hanya setelah ImportFilter.Finish().
+    ''' Kode lama memakai hasil ImportEx sebagai Shape dan tidak memanggil Finish();
+    ''' selain itu parameter Options dikirim Nothing, yang pada beberapa versi
+    ''' ditolak dengan DISP_E_TYPEMISMATCH (0x80020005) -> "Logo tidak dapat diimpor".
+    ''' </summary>
+    Friend Function ImportLogo(doc As Object, layer As Object, filePath As String) As Object
+        Dim attempts As New List(Of String)()
+        Dim filter As Integer = FilterForFile(filePath)
+        Dim shape As Object = Nothing
+
+        ' 1. Cara utama: ImportEx + Finish, tanpa argumen Options (pakai default).
+        shape = TryImportEx(doc, layer, filePath, filter, False, attempts)
+
+        ' 2. Bila ekstensi tak dikenal / filter eksplisit ditolak -> cdrAutoSense.
+        If shape Is Nothing AndAlso filter <> 0 Then
+            shape = TryImportEx(doc, layer, filePath, 0, False, attempts)
+        End If
+
+        ' 3. Beberapa versi justru butuh StructImportOptions eksplisit.
+        If shape Is Nothing Then
+            shape = TryImportEx(doc, layer, filePath, filter, True, attempts)
+        End If
+
+        ' 4. Terakhir: Layer.Import (Sub), lalu cari objek yang baru muncul.
         If shape Is Nothing Then
             Try
-                shape = layer.ImportEx(filePath, 0, Nothing)
+                Dim before As Integer = ShapeCount(layer)
+                layer.Import(filePath, filter)
+                shape = FindNewShape(doc, layer, before)
             Catch ex As Exception
-                lastMessage = ex.Message
+                attempts.Add("Layer.Import: " & ex.Message)
             End Try
         End If
 
         If shape Is Nothing Then
             Throw New InvalidOperationException(
                 "Logo tidak dapat diimpor (" & Path.GetFileName(filePath) & "). " &
-                "Pastikan format didukung (PNG/JPG/TIFF) dan file tidak terkunci. Detail: " & lastMessage)
+                "Pastikan format PNG/JPG/TIFF dan file tidak terkunci. Percobaan: " &
+                String.Join(" | ", attempts.ToArray()))
         End If
 
         Return shape
+    End Function
+
+    ''' <summary>Satu percobaan impor lewat Layer.ImportEx + Finish.</summary>
+    Private Function TryImportEx(doc As Object, layer As Object, filePath As String,
+                                 filter As Integer, withOptions As Boolean,
+                                 attempts As List(Of String)) As Object
+        Try
+            Dim before As Integer = ShapeCount(layer)
+            Dim importFilter As Object
+
+            If withOptions Then
+                Dim options As Object = CreateStructImportOptions()
+                If options Is Nothing Then Return Nothing
+                importFilter = layer.ImportEx(filePath, filter, options)
+            Else
+                importFilter = layer.ImportEx(filePath, filter)
+            End If
+
+            ' Tanpa Finish(), tidak ada objek yang masuk ke halaman.
+            Try
+                importFilter.Finish()
+            Catch
+                ' Sebagian versi langsung mengembalikan shape; Finish tidak ada.
+            End Try
+
+            Return FindNewShape(doc, layer, before)
+        Catch ex As Exception
+            Dim label As String = "ImportEx(" & filter.ToString() &
+                                  If(withOptions, ", options", "") & ")"
+            attempts.Add(label & ": " & ex.Message)
+            Return Nothing
+        End Try
+    End Function
+
+    ''' <summary>Buat StructImportOptions lewat ProgID (tanpa reference interop).</summary>
+    Private Function CreateStructImportOptions() As Object
+        Try
+            Dim t As Type = Type.GetTypeFromProgID("CorelDRAW.StructImportOptions")
+            If t Is Nothing Then Return Nothing
+            Return Activator.CreateInstance(t)
+        Catch
+            Return Nothing
+        End Try
+    End Function
+
+    Private Function ShapeCount(layer As Object) As Integer
+        Try
+            Return CInt(layer.Shapes.Count)
+        Catch
+            Return -1
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Cari objek hasil impor: (1) seleksi (impor menyeleksi objek baru),
+    ''' (2) jumlah shape bertambah, (3) shape bitmap pertama di layer.
+    ''' </summary>
+    Private Function FindNewShape(doc As Object, layer As Object, before As Integer) As Object
+        ' 1) Seleksi setelah impor berisi objek yang baru masuk.
+        Try
+            Dim sel As Object = doc.Selection
+            If sel IsNot Nothing AndAlso CInt(sel.Count) >= 1 Then
+                Try
+                    Return sel.Shapes.First
+                Catch
+                End Try
+                Try
+                    Return sel.Shapes(1)
+                Catch
+                End Try
+                Try
+                    Return sel.Item(1)
+                Catch
+                End Try
+            End If
+        Catch
+        End Try
+
+        ' 2) Jumlah shape bertambah -> ambil kandidat bitmap terbaru.
+        If before >= 0 AndAlso ShapeCount(layer) > before Then
+            Dim found As Object = FindBitmapShape(layer)
+            If found IsNot Nothing Then Return found
+
+            ' Bukan bitmap (mis. EMF) -> ambil objek teratas yang bukan watermark teks.
+            Try
+                Dim total As Integer = ShapeCount(layer)
+                Dim i As Integer = 1
+                While i <= total
+                    Dim sh As Object = layer.Shapes(i)
+                    If Not IsWatermarkTextShape(sh) Then Return sh
+                    i += 1
+                End While
+            Catch
+            End Try
+        End If
+
+        ' 3) Fallback terakhir: shape bitmap pertama di layer.
+        Return FindBitmapShape(layer)
+    End Function
+
+    Private Function FindBitmapShape(layer As Object) As Object
+        Try
+            Dim total As Integer = ShapeCount(layer)
+            Dim i As Integer = 1
+            While i <= total
+                Dim sh As Object = layer.Shapes(i)
+                Try
+                    If CInt(sh.Type) = WatermarkCdrConst.CdrBitmapShape Then Return sh
+                Catch
+                End Try
+                i += 1
+            End While
+        Catch
+        End Try
+        Return Nothing
+    End Function
+
+    Private Function IsWatermarkTextShape(shape As Object) As Boolean
+        Try
+            Dim nm As String = Convert.ToString(shape.Name)
+            Return Not String.IsNullOrEmpty(nm) AndAlso nm.StartsWith(WatermarkLayout.ShapePrefix)
+        Catch
+            Return False
+        End Try
     End Function
 End Class

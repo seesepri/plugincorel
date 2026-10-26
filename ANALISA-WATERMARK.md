@@ -122,7 +122,7 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 109 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 117 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
 | `CorelPageCopier/assets/seta-logo-black.png` | varian **default**: glyph gelap untuk latar terang | — |
 | `CorelPageCopier/assets/seta-logo-white.png` | varian putih untuk latar gelap | — |
@@ -470,7 +470,7 @@ Pemisahan folder/ekstensi dilakukan manual (`FileBaseName`/`FileNameOnly`) alih-
 | Unit test `{order}`: 10 skenario nama file (tanda hubung, garis bawah, tanpa angka, angka < 4 digit, path Windows, nama kosong/Nothing) | **lulus** |
 | Unit test lokasi output (`CanOpenOutputFolder`, `Merge`) | **lulus** |
 | Total unit test | **155 assertion lulus** |
-| `tools/static-checks.py` | **109 pemeriksaan lulus** |
+| `tools/static-checks.py` | **117 pemeriksaan lulus** |
 
 
 ### 4.9 Bug UI: tombol "Watermark..." tidak terlihat (ditemukan saat uji manual, diperbaiki)
@@ -509,6 +509,43 @@ layoutHeader(header, EventArgs.Empty)   ' posisi awal setelah header punya ukura
 Sekalian memperbaiki `sourceLabel`: dengan `Anchor Right` label itu melebar sampai 900 px pada header 560 px, sehingga `AutoEllipsis` tidak pernah aktif (teks bisa keluar jendela alih-alih dipotong dengan "...").
 
 **Pencegahan.** `tools/static-checks.py` sekarang menolak `AnchorStyles.Right` di `Program.vb` dan mewajibkan pola relayout di atas, agar bug ini tidak kembali saat UI diubah.
+
+
+### 4.10 Bug impor logo: `DISP_E_TYPEMISMATCH 0x80020005` (ditemukan saat uji manual, diperbaiki)
+
+**Gejala.** Watermark jenis logo gagal total di CorelDRAW 2022:
+
+```
+Halaman diproses : 0    Shape dibuat : 0    Kegagalan : 2
+• Halaman 1: Logo tidak dapat diimpor (seta-logo-white.png). ...
+  Detail: Type mismatch. (Exception from HRESULT: 0x80020005 (DISP_E_TYPEMISMATCH))
+```
+
+**Penyebab.** Kode lama salah memahami object model CorelDRAW:
+
+```vb
+shape = layer.Import(filePath)                 ' (1)
+shape = layer.ImportEx(filePath, 0, Nothing)   ' (2)
+```
+
+1. `Layer.Import(...)` adalah **Sub** — tidak mengembalikan shape, jadi `shape` tetap `Nothing`.
+2. `Layer.ImportEx(...)` mengembalikan **ImportFilter**, bukan Shape. Objek hasil impor baru benar-benar masuk ke halaman setelah **`ImportFilter.Finish()`** dipanggil — dan kode lama tidak pernah memanggilnya.
+3. Argumen `Options` bertipe `StructImportOptions` dikirim `Nothing` secara eksplisit. Pada beberapa versi CorelDRAW ini ditolak dengan `DISP_E_TYPEMISMATCH`; parameter itu opsional dan seharusnya **dihilangkan** (memakai default `cdrAutoSense`).
+
+**Perbaikan.** Impor kini memakai `ImportEx` + `Finish()` dengan filter eksplisit dari ekstensi, dan beberapa strategi berurutan:
+
+| Urutan | Strategi | Catatan |
+|---|---|---|
+| 1 | `ImportEx(path, filter)` → `Finish()` | jalur utama, tanpa argumen Options |
+| 2 | `ImportEx(path, cdrAutoSense)` → `Finish()` | bila filter eksplisit ditolak |
+| 3 | `ImportEx(path, filter, StructImportOptions)` | dibuat lewat ProgID `CorelDRAW.StructImportOptions` |
+| 4 | `Import(path, filter)` (Sub) | lalu cari objek baru di layer |
+
+Setelah impor, objek hasil dicari berurutan: **(a)** `Document.Selection` (CorelDRAW otomatis menyeleksi objek hasil impor), **(b)** shape yang jumlahnya bertambah (cocok bila tipenya bitmap), **(c)** shape bitmap pertama di layer. Nilai filter: `cdrPNG 802`, `cdrJPEG 774`, `cdrTIFF 772`, `cdrBMP 769`, `cdrGIF 773`, `cdrPSD 788`, selain itu `cdrAutoSense 0`.
+
+Pesan kegagalan sekarang menyertakan **rantai percobaan** (setiap strategi beserta pesan COM aslinya), sehingga laporan pengguna langsung menunjukkan di mana gagalnya.
+
+**Uji tanpa CorelDRAW.** Perilaku COM ditiru dengan objek palsu yang meniru Detail terpenting: shape baru muncul **hanya** setelah `Finish()` dipanggil. 22 assertion baru mencakup pemetaan filter per ekstensi, jalur normal (tepat satu objek masuk, tidak dobel), fallback saat `ImportEx` melempar `DISP_E_TYPEMISMATCH`, dan pesan error saat semua jalur gagal.
 
 
 ---
@@ -584,6 +621,9 @@ Sekalian memperbaiki `sourceLabel`: dengan `Anchor Right` label itu melebar samp
 | 26 | Setelah batch, klik "Buka folder hasil" | Explorer terbuka di folder output dengan file hasil tersorot |
 | 27 | Buka aplikasi (lebar default 600 px) | Tombol **Watermark...** terlihat di pojok kanan atas header |
 | 28 | Perlebar jendela ke 900 px lalu perkecil ke minimum 520 px | Tombol tetap menempel di kanan header, tidak terpotong/keluar layar |
+| 29 | Watermark **Logo saja** dengan logo bawaan putih, 2 halaman | Tiap halaman dapat 1 logo bitmap transparan, laporan "Halaman diproses: 2, Shape dibuat: 2", tanpa kegagalan |
+| 30 | Watermark **Teks + logo** di dokumen 3 halaman | 6 shape dibuat (2 per halaman), teks & logo tidak saling menimpa |
+| 31 | Logo dari file PNG sendiri (bukan bawaan) | Ikut terimpor; bila file JPG/PNG rusak, pesan error memuat rantai "Percobaan:" |
 
 ---
 

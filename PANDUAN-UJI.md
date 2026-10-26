@@ -208,6 +208,7 @@ Lakukan **setelah** §3.4 (watermark sudah ada).
 [ ] 3.2  Copy + undo tunggal + geometri + dokumen inch
 [ ] 3.3  Auto Select mengecualikan watermark
 [ ] 3.4  Watermark teks / logo / gabungan / tile / rotasi / jangkar / lock
+[ ] 3.4b Logo berhasil diimpor di 2+ halaman (bitmap transparan, tidak ada kegagalan)
 [ ] 3.5  Idempoten + hapus watermark + undo
 [ ] 3.6  Token {page} {pages} {order} {file} {date} {time}
 [ ] 3.7  PDF proof (watermark ikut tercetak)
@@ -228,6 +229,8 @@ Lakukan **setelah** §3.4 (watermark sudah ada).
 | Watermark tidak muncul | Layer `WATERMARK` tidak visible, atau objek tertutup objek lain | Cek Object Manager; pastikan layer visible |
 | Watermark tidak ada di PDF | Layer tidak **printable**, atau object manager menyembunyikan layer | Set layer printable; ulangi ekspor |
 | Logo tampak sebagai kotak (ada latar) | Memakai JPG berlatarbelakang (bukan PNG transparan) | Pakai logo bawaan SETA (sudah PNG transparan) atau PNG transparan sendiri |
+| "Logo tidak dapat diimpor ... DISP_E_TYPEMISMATCH 0x80020005" | Bug pemakaian API (sudah diperbaiki; `ImportEx` mengembalikan ImportFilter dan wajib `Finish()`) | Pakai build ≥ commit perbaikan; bila masih muncul, salin seluruh teks "Percobaan:" ke laporan |
+| "Halaman diproses: 0, Shape dibuat: 0" padahal teks saja berhasil | Hanya terjadi pada watermark berlogo | Cek pesan kegagalan per halaman; lihat §4.10 `ANALISA-WATERMARK.md` |
 | Teks `{page}` tidak terganti | Token ditulis dengan kurung lain, mis. `[page]`, atau salah eja | Gunakan `{page}` (kurung kurawal); cek daftar token di dialog |
 | `{order}` berisi seluruh nama file | Memang aturan fallback saat tidak ada angka ≥ 4 digit | Ganti nama file agar memuat nomor order (mis. `INV-2026-0912 …`) |
 | Preset tidak muncul setelah restart | `%APPDATA%` tidak bisa ditulis (kebijakan IT) | Cek apakah `presets.ini` terbentuk; laporkan path & pesan error |

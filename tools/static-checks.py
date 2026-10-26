@@ -12,6 +12,8 @@ Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   Fase 2b   Tombol "Buka folder hasil" + token teks per halaman ({page}/{order}).
   UI-fix    Tombol "Watermark..." benar-benar berada di dalam area header (bukan
             Anchor Right + Location absolut yang mendorongnya keluar layar).
+  Import    Impor logo memakai ImportEx + Finish() (ImportEx mengembalikan
+            ImportFilter, bukan Shape) dan tidak mengirim Options Nothing.
 
 Pakai:  python3 tools/static-checks.py
 Exit code 0 = semua lulus, 1 = ada pelanggaran.
@@ -228,6 +230,18 @@ def main():
           "posisi awal dihitung setelah header masuk root (bukan saat panel masih 200 px)")
     check("sourceLabel.Width = Math.Max(80, header.ClientSize.Width - 4)" in program_src,
           "label status ikut disesuaikan agar AutoEllipsis benar")
+
+    print("Impor logo (object model CorelDRAW):")
+    check(".Finish()" in engine_src, "ImportFilter.Finish() dipanggil (tanpa ini tidak ada objek masuk)")
+    check("importFilter = layer.ImportEx(filePath, filter)" in engine_src,
+          "ImportEx dipanggil tanpa argumen Options (bukan Nothing)")
+    check("layer.ImportEx(filePath, 0, Nothing)" not in engine_src,
+          "tidak mengirim Options = Nothing (penyebab DISP_E_TYPEMISMATCH)")
+    check("ImportLogo(doc, layer, settings.LogoPath)" in engine_src, "ImportLogo menerima document (untuk membaca Selection)")
+    check("FilterForFile" in engine_src, "filter impor dipilih dari ekstensi (cdrPNG 802, cdrJPEG 774, ...)")
+    check("CdrBitmapShape As Integer = 2" in engine_src, "konstanta cdrBitmapShape tersedia")
+    check("Percobaan: " in engine_src, "pesan kegagalan memuat rantai percobaan untuk diagnosis")
+    check("Function ImportLogo(doc As Object, layer As Object" in engine_src, "ImportLogo bisa diuji (Friend) dengan objek COM tiruan")
 
     print("Portabilitas build (proyek non-SDK tanpa import implisit):")
     # Proyek .vbproj lama TIDAK punya import implisit Microsoft.VisualBasic
