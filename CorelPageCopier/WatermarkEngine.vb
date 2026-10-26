@@ -34,6 +34,8 @@ Public Class WatermarkResult
     Public ShapesCreated As Integer = 0
     Public DocumentsTouched As Integer = 0
     Public Failures As New List(Of String)()
+    ''' <summary>Masalah yang tidak menggagalkan operasi (mis. logo gagal, teks tetap dibuat).</summary>
+    Public Warnings As New List(Of String)()
     Public Errors As New List(Of String)()
     Public Log As New List(Of String)()
     Public ProofPdfFiles As New List(Of String)()
@@ -77,6 +79,7 @@ Public Class WatermarkResult
         If String.IsNullOrEmpty(OutputFile) AndAlso Not String.IsNullOrEmpty(other.OutputFile) Then
             OutputFile = other.OutputFile
         End If
+        If other.Warnings IsNot Nothing Then Warnings.AddRange(other.Warnings)
     End Sub
 
     Public Function ToReport() As String
@@ -100,6 +103,12 @@ Public Class WatermarkResult
         If LogRowsWritten > 0 Then sb.AppendLine("Baris log CSV    : " & LogRowsWritten)
         If OutputFolder IsNot Nothing AndAlso OutputFolder.Length > 0 Then
             sb.AppendLine("Folder hasil     : " & OutputFolder)
+        End If
+        If Warnings.Count > 0 Then
+            sb.AppendLine("Peringatan       : " & Warnings.Count)
+            For Each w In Warnings
+                sb.AppendLine("  • " & w)
+            Next
         End If
         sb.AppendLine("Kegagalan        : " & Failures.Count)
         If Failures.Count > 0 Then
@@ -126,6 +135,8 @@ Public Class WatermarkEngine
     Public Event Progress(message As String)
 
     Private ReadOnly _result As New WatermarkResult()
+    ''' <summary>Catatan peringatan halaman yang sedang diproses (mis. logo gagal).</summary>
+    Private ReadOnly _pageNotes As New List(Of String)()
 
     Public ReadOnly Property Result As WatermarkResult
         Get
@@ -223,11 +234,17 @@ Public Class WatermarkEngine
             For pos As Integer = 0 To targets.Count - 1
                 Dim pageIndex As Integer = targets(pos)
                 RaiseEvent Progress("Watermark " & (pos + 1) & "/" & targets.Count & " — halaman " & pageIndex & "…")
+                _pageNotes.Clear()
                 Try
                     Dim created As Integer = ApplyToPage(doc, pages(pageIndex), pageIndex, settings, tokenContext)
                     localResult.ShapesCreated += created
                     localResult.PagesPassed += 1
                     Report("Halaman " & pageIndex & ": " & created & " shape")
+                    ' Halaman tetap dihitung walau logo gagal; masalahnya dilaporkan
+                    ' sebagai peringatan agar watermark teks tidak ikut hilang.
+                    For Each note As String In _pageNotes
+                        localResult.Warnings.Add("Halaman " & pageIndex & ": " & note)
+                    Next
                 Catch ex As Exception
                     localResult.Failures.Add("Halaman " & pageIndex & ": " & ex.Message)
                 End Try
@@ -420,12 +437,27 @@ Public Class WatermarkEngine
         End If
 
         ' --- 2. Objek logo ---------------------------------------------------
+        ' Kegagalan impor logo TIDAK boleh membatalkan watermark teks yang sudah
+        ' dibuat di halaman ini. Kasus logo-only tetap dilaporkan sebagai kegagalan
+        ' halaman (karena memang tidak ada yang berhasil dibuat).
+        Dim logoError As String = ""
         If settings.Kind = WatermarkKind.LogoOnly OrElse settings.Kind = WatermarkKind.TextAndLogo Then
-            Dim logoShape As Object = ImportLogo(doc, layer, settings.LogoPath)
-            logoShape.Name = WatermarkLayout.ShapePrefix & "LOGO"
-            StyleObject(logoShape, settings)
-            created += PlaceObject(logoShape, pageWidth, pageHeight,
-                                   settings.LogoWidthMm, 0, settings, "LOGO")
+            Dim logoShape As Object = Nothing
+            Try
+                logoShape = ImportLogo(doc, layer, settings.LogoPath)
+            Catch ex As Exception
+                logoError = ex.Message
+            End Try
+
+            If logoShape IsNot Nothing Then
+                Try
+                    logoShape.Name = WatermarkLayout.ShapePrefix & "LOGO"
+                Catch
+                End Try
+                StyleObject(logoShape, settings)
+                created += PlaceObject(logoShape, pageWidth, pageHeight,
+                                       settings.LogoWidthMm, 0, settings, "LOGO")
+            End If
         End If
 
         If settings.LockLayer Then
@@ -436,8 +468,12 @@ Public Class WatermarkEngine
         End If
 
         If created = 0 Then
+            If logoError.Length > 0 Then Throw New InvalidOperationException(logoError)
             Throw New InvalidOperationException("Tidak ada objek watermark yang berhasil dibuat.")
         End If
+
+        ' Teks berhasil tetapi logo gagal -> peringatan, bukan kegagalan halaman.
+        If logoError.Length > 0 Then _pageNotes.Add("logo gagal — " & logoError)
 
         Return created
     End Function
@@ -849,94 +885,179 @@ Public Class WatermarkEngine
     End Function
 
     ''' <summary>
-    ''' Impor file logo ke layer, dengan beberapa strategi berurutan.
+    ''' Sumber objek StructImportOptions yang layak dicoba, berurutan.
     '''
-    ''' PENTING (bug yang diperbaiki): pada object model CorelDRAW,
-    '''   - Layer.Import(...)   adalah Sub -> TIDAK mengembalikan shape;
-    '''   - Layer.ImportEx(...) mengembalikan ImportFilter, BUKAN shape, dan objek
-    '''     baru benar-benar masuk halaman hanya setelah ImportFilter.Finish().
-    ''' Kode lama memakai hasil ImportEx sebagai Shape dan tidak memanggil Finish();
-    ''' selain itu parameter Options dikirim Nothing, yang pada beberapa versi
-    ''' ditolak dengan DISP_E_TYPEMISMATCH (0x80020005) -> "Logo tidak dapat diimpor".
+    ''' Pelajaran dari uji manual: mengirim Options = Nothing ditolak dengan
+    ''' DISP_E_TYPEMISMATCH, sedangkan objek options buatan sendiri lewat ProgID
+    ''' (versi salah) ditolak dengan E_FAIL. Yang paling andal adalah objek yang
+    ''' dibuat oleh aplikasi CorelDRAW yang sedang berjalan:
+    '''   app.CreateStructImportOptions()
+    ''' (fungsi ini dipakai juga di VBA/CorelScript). Bila tidak ada, coba ProgID
+    ''' dengan nomor versi aplikasi, lalu ProgID tanpa versi.
+    ''' </summary>
+    Private Function BuildImportOptionsSources(doc As Object) As List(Of KeyValuePair(Of String, Object))
+        Dim list As New List(Of KeyValuePair(Of String, Object))()
+        Dim app As Object = Nothing
+        Dim major As Integer = 0
+        Try
+            app = doc.Application
+            major = CInt(app.VersionMajor)
+        Catch
+        End Try
+
+        ' 1) Dibuat oleh aplikasi yang sedang berjalan.
+        If app IsNot Nothing Then
+            Try
+                Dim opt As Object = app.CreateStructImportOptions()
+                If opt IsNot Nothing Then
+                    PrepareImportOptions(opt)
+                    list.Add(New KeyValuePair(Of String, Object)("app", opt))
+                End If
+            Catch
+            End Try
+        End If
+
+        ' GetTypeFromProgID hanya ada di Windows; di platform lain langsung dilewati.
+        If Not IsWindowsPlatform() Then Return list
+
+        ' 2) ProgID dengan nomor versi (mis. CorelDRAW.StructImportOptions.24).
+        If major > 0 Then
+            Try
+                Dim t As Type = Type.GetTypeFromProgID("CorelDRAW.StructImportOptions." & major.ToString())
+                If t IsNot Nothing Then
+                    Dim opt As Object = Activator.CreateInstance(t)
+                    PrepareImportOptions(opt)
+                    list.Add(New KeyValuePair(Of String, Object)("progid" & major.ToString(), opt))
+                End If
+            Catch
+            End Try
+        End If
+
+        ' 3) ProgID tanpa versi.
+        Try
+            Dim t As Type = Type.GetTypeFromProgID("CorelDRAW.StructImportOptions")
+            If t IsNot Nothing Then
+                Dim opt As Object = Activator.CreateInstance(t)
+                PrepareImportOptions(opt)
+                list.Add(New KeyValuePair(Of String, Object)("progid", opt))
+            End If
+        Catch
+        End Try
+
+        Return list
+    End Function
+
+    ''' <summary>
+    ''' True bila berjalan di Windows. Dipakai untuk melewati pemanggilan
+    ''' Type.GetTypeFromProgID (khusus Windows) di platform lain.
+    ''' </summary>
+    Private Shared Function IsWindowsPlatform() As Boolean
+        Return Environment.OSVersion.Platform = PlatformID.Win32NT
+    End Function
+
+    ''' <summary>
+    ''' Setelan aman untuk impor biasa: Mode = cdrImportFull (1) supaya tidak
+    ''' menuntut handler resample/crop, dan bitmap ditanam (bukan ditautkan).
+    ''' Semua bersifat best-effort: properti yang tidak ada diabaikan.
+    ''' </summary>
+    Public Shared Sub PrepareImportOptions(options As Object)
+        If options Is Nothing Then Return
+        Try
+            options.Mode = 1
+        Catch
+        End Try
+        Try
+            options.LinkBitmapExternally = False
+        Catch
+        End Try
+        Try
+            options.MaintainLayers = False
+        Catch
+        End Try
+        Try
+            options.CombineMultilayerBitmaps = True
+        Catch
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Impor file logo ke layer. Semua pemanggilan memakai TIGA argumen
+    ''' (FileName, Filter, Options) karena hanya bentuk itu yang lolos marshalling
+    ''' saat dipanggil late-bound dari .NET; pemanggilan dengan argumen kurang
+    ''' atau Options = Nothing gagal dengan DISP_E_TYPEMISMATCH (0x80020005).
     ''' </summary>
     Friend Function ImportLogo(doc As Object, layer As Object, filePath As String) As Object
         Dim attempts As New List(Of String)()
         Dim filter As Integer = FilterForFile(filePath)
         Dim shape As Object = Nothing
 
-        ' 1. Cara utama: ImportEx + Finish, tanpa argumen Options (pakai default).
-        shape = TryImportEx(doc, layer, filePath, filter, False, attempts)
+        ' --- A. ImportEx / Import dengan StructImportOptions dari aplikasi -----
+        For Each source As KeyValuePair(Of String, Object) In BuildImportOptionsSources(doc)
+            If source.Value Is Nothing Then Continue For
 
-        ' 2. Bila ekstensi tak dikenal / filter eksplisit ditolak -> cdrAutoSense.
-        If shape Is Nothing AndAlso filter <> 0 Then
-            shape = TryImportEx(doc, layer, filePath, 0, False, attempts)
-        End If
+            shape = TryImport(doc, layer, filePath, filter, source.Value, True,
+                              "ImportEx(" & filter.ToString() & "," & source.Key & ")", attempts)
+            If shape IsNot Nothing Then Return shape
 
-        ' 3. Beberapa versi justru butuh StructImportOptions eksplisit.
-        If shape Is Nothing Then
-            shape = TryImportEx(doc, layer, filePath, filter, True, attempts)
-        End If
-
-        ' 4. Terakhir: Layer.Import (Sub), lalu cari objek yang baru muncul.
-        If shape Is Nothing Then
-            Try
-                Dim before As Integer = ShapeCount(layer)
-                layer.Import(filePath, filter)
-                shape = FindNewShape(doc, layer, before)
-            Catch ex As Exception
-                attempts.Add("Layer.Import: " & ex.Message)
-            End Try
-        End If
-
-        If shape Is Nothing Then
-            Throw New InvalidOperationException(
-                "Logo tidak dapat diimpor (" & Path.GetFileName(filePath) & "). " &
-                "Pastikan format PNG/JPG/TIFF dan file tidak terkunci. Percobaan: " &
-                String.Join(" | ", attempts.ToArray()))
-        End If
-
-        Return shape
-    End Function
-
-    ''' <summary>Satu percobaan impor lewat Layer.ImportEx + Finish.</summary>
-    Private Function TryImportEx(doc As Object, layer As Object, filePath As String,
-                                 filter As Integer, withOptions As Boolean,
-                                 attempts As List(Of String)) As Object
-        Try
-            Dim before As Integer = ShapeCount(layer)
-            Dim importFilter As Object
-
-            If withOptions Then
-                Dim options As Object = CreateStructImportOptions()
-                If options Is Nothing Then Return Nothing
-                importFilter = layer.ImportEx(filePath, filter, options)
-            Else
-                importFilter = layer.ImportEx(filePath, filter)
+            If filter <> 0 Then
+                shape = TryImport(doc, layer, filePath, 0, source.Value, True,
+                                  "ImportEx(auto," & source.Key & ")", attempts)
+                If shape IsNot Nothing Then Return shape
             End If
 
-            ' Tanpa Finish(), tidak ada objek yang masuk ke halaman.
-            Try
-                importFilter.Finish()
-            Catch
-                ' Sebagian versi langsung mengembalikan shape; Finish tidak ada.
-            End Try
+            shape = TryImport(doc, layer, filePath, filter, source.Value, False,
+                              "Import(" & filter.ToString() & "," & source.Key & ")", attempts)
+            If shape IsNot Nothing Then Return shape
+        Next
 
-            Return FindNewShape(doc, layer, before)
-        Catch ex As Exception
-            Dim label As String = "ImportEx(" & filter.ToString() &
-                                  If(withOptions, ", options", "") & ")"
-            attempts.Add(label & ": " & ex.Message)
-            Return Nothing
-        End Try
+        ' --- B. Tanpa options (sebagian versi menerima argumen opsional) -------
+        shape = TryImport(doc, layer, filePath, filter, Nothing, True,
+                          "ImportEx(" & filter.ToString() & ")", attempts)
+        If shape IsNot Nothing Then Return shape
+
+        shape = TryImport(doc, layer, filePath, filter, Nothing, False,
+                          "Import(" & filter.ToString() & ")", attempts)
+        If shape IsNot Nothing Then Return shape
+
+        Throw New InvalidOperationException(
+            "Logo tidak dapat diimpor (" & Path.GetFileName(filePath) & "). " &
+            "Percobaan: " & String.Join(" | ", attempts.ToArray()))
     End Function
 
-    ''' <summary>Buat StructImportOptions lewat ProgID (tanpa reference interop).</summary>
-    Private Function CreateStructImportOptions() As Object
+    ''' <summary>Satu percobaan impor. useImportEx=True -> ImportEx + Finish; False -> Import.</summary>
+    Private Function TryImport(doc As Object, layer As Object, filePath As String,
+                               filter As Integer, options As Object, useImportEx As Boolean,
+                               label As String, attempts As List(Of String)) As Object
         Try
-            Dim t As Type = Type.GetTypeFromProgID("CorelDRAW.StructImportOptions")
-            If t Is Nothing Then Return Nothing
-            Return Activator.CreateInstance(t)
-        Catch
+            Dim before As Integer = ShapeCount(layer)
+
+            If useImportEx Then
+                Dim importFilter As Object
+                If options Is Nothing Then
+                    importFilter = layer.ImportEx(filePath, filter)
+                Else
+                    importFilter = layer.ImportEx(filePath, filter, options)
+                End If
+                ' Tanpa Finish(), objek hasil impor tidak pernah masuk halaman.
+                Try
+                    importFilter.Finish()
+                Catch
+                End Try
+            Else
+                If options Is Nothing Then
+                    layer.Import(filePath, filter)
+                Else
+                    layer.Import(filePath, filter, options)
+                End If
+            End If
+
+            Dim found As Object = FindNewShape(doc, layer, before)
+            If found IsNot Nothing Then Return found
+
+            attempts.Add(label & ": tidak ada objek baru")
+            Return Nothing
+        Catch ex As Exception
+            attempts.Add(label & ": " & ex.Message)
             Return Nothing
         End Try
     End Function

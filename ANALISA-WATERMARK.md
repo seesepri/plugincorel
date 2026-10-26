@@ -122,7 +122,7 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 117 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 128 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
 | `CorelPageCopier/assets/seta-logo-black.png` | varian **default**: glyph gelap untuk latar terang | — |
 | `CorelPageCopier/assets/seta-logo-white.png` | varian putih untuk latar gelap | — |
@@ -470,7 +470,7 @@ Pemisahan folder/ekstensi dilakukan manual (`FileBaseName`/`FileNameOnly`) alih-
 | Unit test `{order}`: 10 skenario nama file (tanda hubung, garis bawah, tanpa angka, angka < 4 digit, path Windows, nama kosong/Nothing) | **lulus** |
 | Unit test lokasi output (`CanOpenOutputFolder`, `Merge`) | **lulus** |
 | Total unit test | **155 assertion lulus** |
-| `tools/static-checks.py` | **117 pemeriksaan lulus** |
+| `tools/static-checks.py` | **128 pemeriksaan lulus** |
 
 
 ### 4.9 Bug UI: tombol "Watermark..." tidak terlihat (ditemukan saat uji manual, diperbaiki)
@@ -546,6 +546,44 @@ Setelah impor, objek hasil dicari berurutan: **(a)** `Document.Selection` (Corel
 Pesan kegagalan sekarang menyertakan **rantai percobaan** (setiap strategi beserta pesan COM aslinya), sehingga laporan pengguna langsung menunjukkan di mana gagalnya.
 
 **Uji tanpa CorelDRAW.** Perilaku COM ditiru dengan objek palsu yang meniru Detail terpenting: shape baru muncul **hanya** setelah `Finish()` dipanggil. 22 assertion baru mencakup pemetaan filter per ekstensi, jalur normal (tepat satu objek masuk, tidak dobel), fallback saat `ImportEx` melempar `DISP_E_TYPEMISMATCH`, dan pesan error saat semua jalur gagal.
+
+
+### 4.11 Bug impor logo, lanjutan: strategi options yang benar + degradasi
+
+**Gejala (setelah perbaikan §4.10).** Semua strategi gagal, dengan pola yang sangat informatif:
+
+```
+ImportEx(774): Type mismatch (0x80020005)
+ImportEx(0): Type mismatch (0x80020005)
+ImportEx(774, options): Unspecified error (0x80004005 E_FAIL)
+Layer.Import: Type mismatch (0x80020005)
+```
+
+**Cara membacanya.** Pemanggilan yang **argumennya kurang** atau `Options = Nothing` ditolak di tahap marshalling (`DISP_E_TYPEMISMATCH`), sedangkan pemanggilan dengan **tiga argumen lengkap** lolos sampai ke mesin impor CorelDRAW — dan di situ gagal dengan `E_FAIL`. Kesimpulannya:
+
+1. `IVGLayer.Import/ImportEx` harus dipanggil dengan **tiga argumen** dari .NET (argumen opsional tidak boleh dihilangkan, dan `Nothing` tidak diterima untuk parameter `StructImportOptions`).
+2. Objek options yang dibuat sendiri lewat ProgID **tidak valid** untuk aplikasi yang sedang berjalan (kemungkinan milik versi lain) -> `E_FAIL`.
+
+**Perbaikan.**
+
+- Options kini dibuat oleh aplikasi itu sendiri: **`Application.CreateStructImportOptions()`** (fungsi yang sama dipakai skrip VBA/CorelScript). Bila tidak tersedia, baru mencoba ProgID berversi (`CorelDRAW.StructImportOptions.<major>`) lalu ProgID tanpa versi.
+- Setiap objek options disiapkan lewat `PrepareImportOptions`: `Mode = 1` (`cdrImportFull`, agar tidak menuntut handler resample/crop), `LinkBitmapExternally = False` (bitmap ditanam), `MaintainLayers = False`, `CombineMultilayerBitmaps = True` — semuanya best-effort dalam `Try/Catch`.
+- Urutan percobaan: untuk setiap sumber options -> `ImportEx(filter, opts)` + `Finish()` -> `ImportEx(cdrAutoSense, opts)` + `Finish()` -> `Import(filter, opts)`; setelah semua sumber habis baru dicoba bentuk tanpa options.
+- `Type.GetTypeFromProgID` hanya dipanggil di Windows (`IsWindowsPlatform`), supaya unit test lintas platform tidak menyentuh API khusus Windows.
+
+**Degradasi yang lebih baik.** Sebelumnya satu kegagalan logo membatalkan seluruh halaman, sehingga watermark **teks** yang sudah berhasil dibuat ikut hilang dari hitungan ("Halaman diproses: 0"). Sekarang:
+
+- Watermark **teks tetap dibuat**; kegagalan logo dicatat sebagai **Peringatan** ("Halaman n: logo gagal — …") dan halaman tetap dihitung.
+- `WatermarkResult.Warnings` baru, tampil di laporan sebagai baris `Peringatan`, dan **tidak** membuat `Ok = False`.
+- Kasus **logo-only** tetap dilaporkan sebagai **kegagalan halaman**, karena memang tidak ada objek yang berhasil dibuat.
+
+**Unit test sekarang ada di repo** (`tests/`), bukan di folder sementara:
+
+```
+dotnet run --project tests/CorelPageCopier.Tests.vbproj
+```
+
+75 assertion: token & ekstraksi order, filter impor per ekstensi, impor lewat `Application.CreateStructImportOptions` (termasuk verifikasi `Mode`, `LinkBitmapExternally`), fallback saat API tidak tersedia, fallback saat `ImportEx` melempar, kasus `Finish()` tidak menghasilkan objek, pesan kegagalan, serta `WatermarkResult`/`Warnings`/geometri. **CI sekarang menjalankan test ini** sebelum MSBuild, sehingga regresi tertangkap lebih awal.
 
 
 ---
@@ -624,6 +662,8 @@ Pesan kegagalan sekarang menyertakan **rantai percobaan** (setiap strategi beser
 | 29 | Watermark **Logo saja** dengan logo bawaan putih, 2 halaman | Tiap halaman dapat 1 logo bitmap transparan, laporan "Halaman diproses: 2, Shape dibuat: 2", tanpa kegagalan |
 | 30 | Watermark **Teks + logo** di dokumen 3 halaman | 6 shape dibuat (2 per halaman), teks & logo tidak saling menimpa |
 | 31 | Logo dari file PNG sendiri (bukan bawaan) | Ikut terimpor; bila file JPG/PNG rusak, pesan error memuat rantai "Percobaan:" |
+| 32 | Watermark **Teks + logo** saat logo gagal | Teks tetap muncul, laporan menampilkan baris **Peringatan** (bukan Kegagalan), halaman tetap dihitung |
+| 33 | Watermark **Logo saja** saat logo gagal | Dilaporkan sebagai **Kegagalan** halaman (tidak ada objek dibuat) |
 
 ---
 

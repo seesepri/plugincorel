@@ -37,8 +37,9 @@ Waktu pengujian: **±20 menit** untuk smoke test (§2), **±60–90 menit** untu
 
 ```bat
 python tools\static-checks.py
+dotnet run --project tests\CorelPageCopier.Tests.vbproj
 ```
-Harus berakhir `SEMUA PEMERIKSAAN STATIS LULUS` (104 pemeriksaan). Kalau ada `FAIL`, jangan lanjut uji manual — laporkan dulu.
+Harus berakhir `SEMUA PEMERIKSAAN STATIS LULUS` (128 pemeriksaan) lalu `SEMUA TES LULUS` (75 assertion). Kalau ada `FAIL`, jangan lanjut uji manual — laporkan dulu.
 
 ---
 
@@ -229,7 +230,9 @@ Lakukan **setelah** §3.4 (watermark sudah ada).
 | Watermark tidak muncul | Layer `WATERMARK` tidak visible, atau objek tertutup objek lain | Cek Object Manager; pastikan layer visible |
 | Watermark tidak ada di PDF | Layer tidak **printable**, atau object manager menyembunyikan layer | Set layer printable; ulangi ekspor |
 | Logo tampak sebagai kotak (ada latar) | Memakai JPG berlatarbelakang (bukan PNG transparan) | Pakai logo bawaan SETA (sudah PNG transparan) atau PNG transparan sendiri |
-| "Logo tidak dapat diimpor ... DISP_E_TYPEMISMATCH 0x80020005" | Bug pemakaian API (sudah diperbaiki; `ImportEx` mengembalikan ImportFilter dan wajib `Finish()`) | Pakai build ≥ commit perbaikan; bila masih muncul, salin seluruh teks "Percobaan:" ke laporan |
+| "Logo tidak dapat diimpor ... 0x80020005" semua strategi | Argumen impor dipanggil dengan jumlah salah / `Options = Nothing` | Pakai build terbaru (options dari `Application.CreateStructImportOptions`). Bila masih: salin seluruh teks "Percobaan:" |
+| "Logo tidak dapat diimpor ... E_FAIL 0x80004005" hanya pada satu strategi | Objek `StructImportOptions` tidak cocok versi | Normal — strategi lain dipakai otomatis. Bila SEMUA gagal, laporkan versi CorelDRAW |
+| Watermark teks muncul tapi ada baris **Peringatan: logo gagal** | Logo gagal, teks berhasil (degradasi disengaja) | Cek path file logo & format; perbaiki lalu Terapkan ulang |
 | "Halaman diproses: 0, Shape dibuat: 0" padahal teks saja berhasil | Hanya terjadi pada watermark berlogo | Cek pesan kegagalan per halaman; lihat §4.10 `ANALISA-WATERMARK.md` |
 | Teks `{page}` tidak terganti | Token ditulis dengan kurung lain, mis. `[page]`, atau salah eja | Gunakan `{page}` (kurung kurawal); cek daftar token di dialog |
 | `{order}` berisi seluruh nama file | Memang aturan fallback saat tidak ada angka ≥ 4 digit | Ganti nama file agar memuat nomor order (mis. `INV-2026-0912 …`) |

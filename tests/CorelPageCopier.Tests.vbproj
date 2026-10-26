@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Unit test mandiri untuk logika yang tidak butuh CorelDRAW.
+    Dikompilasi ulang dari sumber VB yang sama (tanpa referensi ke proyek net48)
+    memakai SDK .NET modern, sehingga bisa dijalankan di Linux maupun Windows.
+    Perintah:
+
+        dotnet run (project) tests/CorelPageCopier.Tests.vbproj
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>CorelPageCopierTests</RootNamespace>
+    <OptionStrict>Off</OptionStrict>
+    <OptionInfer>On</OptionInfer>
+    <StartupObject>CorelPageCopierTests.TestMain</StartupObject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- Proyek non-SDK tidak punya import VB implisit; samakan kondisinya. -->
+    <DisableImplicitNamespaceImports>true</DisableImplicitNamespaceImports>
+    <NoWarn>BC42024,BC42025</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="../CorelPageCopier/assets/seta-logo-black.png" LogicalName="CorelPageCopier.assets.seta-logo-black.png" />
+    <EmbeddedResource Include="../CorelPageCopier/assets/seta-logo-white.png" LogicalName="CorelPageCopier.assets.seta-logo-white.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../CorelPageCopier/WatermarkLayout.vb" />
+    <Compile Include="../CorelPageCopier/WatermarkTokens.vb" />
+    <Compile Include="../CorelPageCopier/WatermarkEngine.vb" />
+    <Compile Include="../CorelPageCopier/PresetStore.vb" />
+    <Compile Include="../CorelPageCopier/BatchLog.vb" />
+    <Compile Include="TestMain.vb" />
+    <Compile Include="TokenTests.vb" />
+    <Compile Include="ImportLogoTests.vb" />
+    <Compile Include="LayoutAndResultTests.vb" />
+  </ItemGroup>
+</Project>

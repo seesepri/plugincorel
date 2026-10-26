@@ -12,8 +12,9 @@ Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   Fase 2b   Tombol "Buka folder hasil" + token teks per halaman ({page}/{order}).
   UI-fix    Tombol "Watermark..." benar-benar berada di dalam area header (bukan
             Anchor Right + Location absolut yang mendorongnya keluar layar).
-  Import    Impor logo memakai ImportEx + Finish() (ImportEx mengembalikan
-            ImportFilter, bukan Shape) dan tidak mengirim Options Nothing.
+  Import    Impor logo memakai ImportEx + Finish() dengan StructImportOptions
+            dari Application.CreateStructImportOptions (bukan Nothing/ProgID asal),
+            dan kegagalan logo tidak membatalkan watermark teks.
 
 Pakai:  python3 tools/static-checks.py
 Exit code 0 = semua lulus, 1 = ada pelanggaran.
@@ -34,6 +35,7 @@ files = {
     "batchlog": os.path.join(SRC, "BatchLog.vb"),
     "tokens": os.path.join(SRC, "WatermarkTokens.vb"),
     "vbproj": os.path.join(SRC, "CorelPageCopier.vbproj"),
+    "workflow": os.path.join(ROOT, ".github", "workflows", "build-release.yml"),
 }
 
 failures = []
@@ -241,6 +243,21 @@ def main():
     check("FilterForFile" in engine_src, "filter impor dipilih dari ekstensi (cdrPNG 802, cdrJPEG 774, ...)")
     check("CdrBitmapShape As Integer = 2" in engine_src, "konstanta cdrBitmapShape tersedia")
     check("Percobaan: " in engine_src, "pesan kegagalan memuat rantai percobaan untuk diagnosis")
+    check("CreateStructImportOptions" in engine_src,
+          "StructImportOptions dibuat oleh aplikasi (Application.CreateStructImportOptions)")
+    check("PrepareImportOptions" in engine_src, "options disiapkan (Mode=cdrImportFull, bitmap ditanam)")
+    check("options.Mode = 1" in engine_src, "Mode = 1 (cdrImportFull) agar tidak menuntut handler")
+    check("BuildImportOptionsSources" in engine_src, "beberapa sumber options dicoba berurutan")
+    check("IsWindowsPlatform" in engine_src, "GetTypeFromProgID dilewati di non-Windows")
+    check("Warnings As New List(Of String)" in engine_src, "hasil punya daftar Peringatan")
+    check("_pageNotes" in engine_src, "kegagalan logo dicatat sebagai peringatan per halaman")
+    check("If logoError.Length > 0 Then Throw New InvalidOperationException(logoError)" in engine_src,
+          "watermark logo-only yang gagal tetap dilaporkan sebagai kegagalan halaman")
+    check("logo gagal — " in engine_src, "teks tetap dibuat walau logo gagal (degradasi)")
+
+    # Unit test ikut dijalankan CI
+    workflow = read("workflow")
+    check("tests/CorelPageCopier.Tests.vbproj" in workflow, "CI menjalankan unit test di tests/")
     check("Function ImportLogo(doc As Object, layer As Object" in engine_src, "ImportLogo bisa diuji (Friend) dengan objek COM tiruan")
 
     print("Portabilitas build (proyek non-SDK tanpa import implisit):")
@@ -257,7 +274,7 @@ def main():
         "Microsoft.VisualBasic.Strings.ChrW",
         "Microsoft.VisualBasic.Strings.Chr",
     )
-    for key in ("program", "layout", "engine", "dialog", "preset", "batchlog", "tokens"):
+    for key in ("program", "layout", "engine", "dialog", "preset", "batchlog", "tokens", "workflow"):
         src = read(key)
         scrubbed = src
         for form in qualified_forms:
