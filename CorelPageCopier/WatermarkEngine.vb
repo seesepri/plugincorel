@@ -513,10 +513,11 @@ Public Class WatermarkEngine
 
     Private Function IsWatermarkShape(shape As Object) As Boolean
         Try
-            Dim name_ As String = CStr(shape.Name)
-            If name_ IsNot Nothing AndAlso name_.StartsWith(WatermarkLayout.ShapePrefix, StringComparison.Ordinal) Then
-                Return True
-            End If
+            If WatermarkLayout.IsWatermarkObjectName(CStr(shape.Name)) Then Return True
+        Catch
+        End Try
+        Try
+            If WatermarkLayout.IsWatermarkLayerName(CStr(shape.Layer.Name)) Then Return True
         Catch
         End Try
         ' Shape grup: cek turunannya.

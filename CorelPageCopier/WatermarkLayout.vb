@@ -61,7 +61,7 @@ Public Class WatermarkSettings
     Public AllPages As Boolean = True
     Public TargetPages As New List(Of Integer)()    ' dipakai bila AllPages = False
     Public ReplaceExisting As Boolean = True        ' hapus watermark lama dulu (idempoten)
-    Public LayerName As String = "WATERMARK"
+    Public LayerName As String = WatermarkLayout.DefaultLayerName
     Public GroupWithPrefix As Boolean = True        ' grup teks+logo jadi 1 shape bergrup
     Public LockLayer As Boolean = False             ' kunci layer setelah diterapkan
 
@@ -150,6 +150,30 @@ Public Class WatermarkLayout
 
     ''' <summary>Awalan nama shape watermark, dipakai untuk cari/hapus/ganti.</summary>
     Public Const ShapePrefix As String = "WM_"
+
+    ''' <summary>Nama layer default tempat watermark diletakkan.</summary>
+    Public Const DefaultLayerName As String = "WATERMARK"
+
+    ''' <summary>True bila nama shape adalah objek watermark (dipakai Auto Select &amp; hapus).</summary>
+    Public Shared Function IsWatermarkObjectName(shapeName As String) As Boolean
+        If shapeName Is Nothing Then Return False
+        Return shapeName.StartsWith(ShapePrefix, StringComparison.Ordinal)
+    End Function
+
+    ''' <summary>True bila nama layer adalah layer watermark.</summary>
+    Public Shared Function IsWatermarkLayerName(layerName As String) As Boolean
+        If layerName Is Nothing Then Return False
+        Return String.Equals(layerName.Trim(), DefaultLayerName, StringComparison.OrdinalIgnoreCase)
+    End Function
+    ''' <summary>
+    ''' Identitas watermark berdasarkan nama shape ATAU nama layer-nya.
+    ''' Dipakai bersama oleh Auto Select (agar watermark tidak ikut terpilih),
+    ''' penghapusan watermark, dan penggantian watermark.
+    ''' </summary>
+    Public Shared Function IsWatermarkIdentity(shapeName As String, layerName As String) As Boolean
+        Return IsWatermarkObjectName(shapeName) OrElse IsWatermarkLayerName(layerName)
+    End Function
+
 
     ''' <summary>Konversi opasitas (%) menjadi nilai transparency CorelDRAW (0..100).</summary>
     Public Shared Function TransparencyFromOpacity(opacityPercent As Integer) As Integer
@@ -245,5 +269,47 @@ Public Class WatermarkLayout
         End If
 
         Return result
+    End Function
+    ' ========================================================================
+    '  VERIFIKASI GEOMETRI (dipakai CopyClicked)
+    ' ========================================================================
+
+    ''' <summary>Selisih posisi & ukuran objek hasil operasi terhadap objek sumber (mm).</summary>
+    Public Structure GeometryDelta
+        Public DX As Double
+        Public DY As Double
+        Public DW As Double
+        Public DH As Double
+
+        Public Function Matches(toleranceMm As Double) As Boolean
+            Return Math.Abs(DX) <= toleranceMm AndAlso
+                   Math.Abs(DY) <= toleranceMm AndAlso
+                   Math.Abs(DW) <= toleranceMm AndAlso
+                   Math.Abs(DH) <= toleranceMm
+        End Function
+
+        Public Function Describe() As String
+            Return "Δx " & Fmt(DX) & ", Δy " & Fmt(DY) & ", Δw " & Fmt(DW) & ", Δh " & Fmt(DH)
+        End Function
+
+        Private Shared Function Fmt(value As Double) As String
+            Return String.Format("{0:+0.0;-0.0;0.0} mm", value)
+        End Function
+    End Structure
+
+    ''' <summary>
+    ''' Bandingkan kotak pembatas objek sumber dengan objek hasil (posisi tengah + ukuran).
+    ''' Nilai harus dalam satuan yang sama (mm selama operasi copy).
+    ''' </summary>
+    Public Shared Function CompareGeometry(srcCenterX As Double, srcCenterY As Double,
+                                           srcWidth As Double, srcHeight As Double,
+                                           dstCenterX As Double, dstCenterY As Double,
+                                           dstWidth As Double, dstHeight As Double) As GeometryDelta
+        Dim delta As New GeometryDelta()
+        delta.DX = dstCenterX - srcCenterX
+        delta.DY = dstCenterY - srcCenterY
+        delta.DW = dstWidth - srcWidth
+        delta.DH = dstHeight - srcHeight
+        Return delta
     End Function
 End Class

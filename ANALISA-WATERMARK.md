@@ -49,15 +49,15 @@ Kalau watermark ditambahkan langsung ke `CopierForm`, file itu akan melewati ±1
 
 Prioritas: **P1** = berpotensi merusak data / salah dokumen, **P2** = bug / risiko perilaku, **P3** = kebersihan kode.
 
-| # | Temuan | Dampak | Prioritas |
-|---|---|---|---|
-| 1 | **Tidak ada undo grouping.** Copy & watermark tidak dibungkus `doc.BeginCommandGroup`/`EndCommandGroup`, jadi user harus Ctrl+Z berkali-kali untuk membatalkan | Salah klik = repot, terutama kalau nanti batch 50 file | **P1** |
-| 2 | **`Auto Select` "Semua objek" akan ikut memilih watermark.** `CollectMatchingShape` untuk kategori 4 menambahkan semua shape. Setelah watermark ada, "Pilih semua + Salin" akan menyalin watermark juga | Watermark dobel/berantakan di halaman tujuan | **P1** |
-| 3 | **Watermark harus punya penanda.** Tanpa nama shape/layer khusus, watermark tidak bisa diganti/dihapus terprogram dan tidak bisa dikecualikan dari Auto Select | Watermark jadi sampah permanen di dokumen | **P1** |
-| 4 | **Satuan dokumen tidak pernah dinormalisasi.** Semua posisi objek CorelDRAW dibaca/ditulis dalam `Document.Unit` (bisa inch/mm/pt tergantung dokumen). Fitur watermark butuh mm absolut | Watermark bisa salah skala per dokumen | **P1** |
+| # | Temuan | Dampak | Prioritas | Status |
+|---|---|---|---|---|
+| 1 | **Tidak ada undo grouping.** Copy & watermark tidak dibungkus `doc.BeginCommandGroup`/`EndCommandGroup`, jadi user harus Ctrl+Z berkali-kali untuk membatalkan | Salah klik = repot, terutama kalau nanti batch 50 file | **P1** | ✅ diperbaiki (§4.4) |
+| 2 | **`Auto Select` "Semua objek" akan ikut memilih watermark.** `CollectMatchingShape` untuk kategori 4 menambahkan semua shape. Setelah watermark ada, "Pilih semua + Salin" akan menyalin watermark juga | Watermark dobel/berantakan di halaman tujuan | **P1** | ✅ diperbaiki (§4.4) |
+| 3 | **Watermark harus punya penanda.** Tanpa nama shape/layer khusus, watermark tidak bisa diganti/dihapus terprogram dan tidak bisa dikecualikan dari Auto Select | Watermark jadi sampah permanen di dokumen | **P1** | ✅ diperbaiki (§4.4) |
+| 4 | **Satuan dokumen tidak pernah dinormalisasi.** Semua posisi objek CorelDRAW dibaca/ditulis dalam `Document.Unit` (bisa inch/mm/pt tergantung dokumen). Fitur watermark butuh mm absolut | Watermark bisa salah skala per dokumen | **P1** | ✅ diperbaiki (§4.4) |
 | 5 | `ConnectToCorel` bisa membuka **instance CorelDRAW kedua** (fallback `Activator.CreateInstance`), lalu user mengedit dokumen di instance lain → aplikasi menulis ke dokumen yang salah | Perubahan hilang / user bingung | **P2** |
 | 6 | `Application.DoEvents()` di dalam loop paste/scan → re-entrancy (user bisa klik tombol lain saat proses berjalan); tidak ada flag `busy` | State kacau saat proses panjang | **P2** |
-| 7 | Verifikasi hasil copy hanya berbasis **jumlah shape tingkat atas** (`afterCount > beforeCount`) — grup/layer khusus bisa lolos tanpa perubahan jumlah shape | False positive "berhasil" | **P2** |
+| 7 | Verifikasi hasil copy hanya berbasis **jumlah shape tingkat atas** (`afterCount > beforeCount`) — grup/layer khusus bisa lolos tanpa perubahan jumlah shape | False positive "berhasil" | **P2** | ✅ diperbaiki (§4.4) |
 | 8 | `Option Strict Off` + late binding: typo nama properti COM baru ketahuan saat runtime. Wajar untuk COM tanpa interop, tapi butuh pola `Try/Catch` per-API (sudah saya pakai di kode watermark) | Crash runtime | **P2** |
 | 9 | Tidak ada penyimpanan preset/setting (ukuran watermark, logo brand, dsb.) → user mengisi ulang tiap kali | UX | **P3** |
 | 10 | `ToolbarLauncher.bas` hardcode `C:\Program Files\Corel Page Copier\CorelPageCopier.exe` | Gagal kalau dipasang di path lain | **P3** |
@@ -128,7 +128,8 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 |---|---|
 | Kompilasi seluruh proyek (Program.vb + 3 file baru) sebagai `.NET Framework 4.8` WinExe x64 | **Build succeeded, 0 error** |
 | Kompilasi setelah sisipan tombol watermark di `CopierForm` (kode integrasi di §4.2) | **Build succeeded, 0 error** |
-| Uji unit matematika (jangkar, tile, simetri, fallback, mapping opasitas, validasi setting) | **31 assertion, semua lulus** |
+| Uji unit matematika (jangkar, tile, simetri, fallback, mapping opasitas, validasi setting) | **52 assertion, semua lulus** (31 dasar + 21 untuk perbaikan §4.4) |
+| Pemeriksaan statis `tools/static-checks.py` (menjaga #1/#2/#3 saat refactor) | **22 pemeriksaan, semua lulus** |
 | Uji integrasi nyata ke CorelDRAW 2022 | **belum bisa** — tidak ada Windows/CorelDRAW di lingkungan ini (sama seperti catatan di `README_ID.md` repo) |
 
 ### 4.2 Cara memasang (2 langkah, ±2 menit)
@@ -193,6 +194,77 @@ Tidak ada perubahan lain yang diperlukan. Workflow CI tidak perlu diubah (file b
 - **Idempoten**: tombol Terapkan boleh ditekan berulang tanpa menumpuk watermark.
 - **Laporan**: jumlah halaman diproses, shape dibuat, daftar kegagalan per halaman — sama pola-nya dengan laporan `CopyClicked` yang sudah ada.
 
+### 4.4 Perbaikan Temuan #1–#3 (selesai)
+
+Ketiganya dikerjakan di `Program.vb` + helper bersama di `WatermarkLayout.vb`. Tidak ada perubahan pada `.vbproj`, workflow CI, atau UI (kecuali tombol Watermark yang opsional di §4.2).
+
+#### #1 — Undo grouping
+
+```vb
+Try
+    corelDoc.BeginCommandGroup("Salin objek ke halaman")
+    inCommandGroup = True
+Catch
+End Try
+' ...seluruh loop paste ke semua halaman tujuan...
+Finally
+    If inCommandGroup Then Try : corelDoc.EndCommandGroup() : Catch : End Try
+End Try
+```
+
+- Karena `EndCommandGroup` ada di blok `Finally`, grup undo **selalu** ditutup walau ada exception/kegagalan per halaman — tidak mungkin "menggantung".
+- Efek: **satu Ctrl+Z membatalkan seluruh paste** ke semua halaman tujuan, bukan satu per satu.
+- Watermark (`WatermarkEngine`) sudah memakai pola yang sama sejak awal.
+- Posisi grup dimulai **setelah** `selection.Copy()`, karena operasi clipboard tidak perlu masuk undo stack.
+
+#### #2 — Auto Select mengecualikan watermark
+
+Di awal `CollectMatchingShape` (berlaku untuk semua kategori, bukan hanya "Semua objek"):
+
+```vb
+If IsWatermarkShape(shape, depth) Then Return
+```
+
+`IsWatermarkShape` menganggap objek sebagai watermark jika:
+
+1. `Shape.Name` berawalan `WM_`, **atau**
+2. shape berada di layer bernama `WATERMARK` (case-insensitive, trim), **atau**
+3. shape adalah grup yang salah satu anggotanya memenuhi (1) atau (2) — rekursif, kedalaman maksimum 32 (sama seperti `CollectMatchingShape`).
+
+Logika nama/layer dipusatkan di `WatermarkLayout.IsWatermarkIdentity(shapeName, layerName)` supaya **satu sumber kebenaran** dipakai bersama oleh Auto Select, `WatermarkEngine.IsWatermarkShape` (hapus/ganti watermark), dan pembuatan watermark.
+
+Catatan perilaku: grup yang **campuran** (berisi objek desain + watermark) akan dilewati seluruhnya saat Auto Select "Semua objek" — konservatif dengan sengaja, karena menyalin grup campuran berarti menyalin watermark juga.
+
+#### #3 — Normalisasi satuan dokumen
+
+```vb
+previousUnit = CInt(corelDoc.Unit)   ' disimpan
+corelDoc.Unit = CDR_UNIT_MM          ' = 3, selama operasi
+' ...ukur sumber, paste, ukur hasil, bandingkan dalam mm...
+Finally
+    corelDoc.Unit = previousUnit     ' selalu dipulihkan
+```
+
+- `CenterX`/`CenterY`/`SizeWidth`/`SizeHeight` dibaca & ditulis dalam `Document.Unit`, jadi tanpa normalisasi perbandingan bisa meleset 25.4× antar dokumen (inch vs mm).
+- Verifikasi hasil copy kini **membandingkan geometri**, bukan hanya jumlah shape:
+  - ukur objek sumber (gabungan `ShapeRange`) → center + ukuran dalam mm,
+  - setelah `Paste`, ukur `N` shape teratas pada layer aktif (`N` = jumlah shape yang bertambah) lalu hitung kotak pembatas gabungannya,
+  - cocok bila selisih x, y, lebar, dan tinggi semuanya ≤ **0.5 mm** (`GEOMETRY_TOLERANCE_MM`).
+- Kasus tepi yang ditangani eksplisit: objek terlalu rumit/tidak terukur → dihitung "terverifikasi lewat jumlah shape saja" dan **dipisahkan di laporan**, jadi tidak lagi tercampur dengan hasil yang benar-benar terverifikasi.
+- Laporan sekarang memisahkan: *geometri cocok* / *hanya jumlah shape* / *gagal*, dan menyebutkan toleransi + fakta bahwa satuan dipulihkan otomatis.
+
+#### Verifikasi perbaikan
+
+| Uji | Hasil |
+|---|---|
+| Kompilasi proyek (net48, WinExe x64) | **Build succeeded, 0 error, 0 warning** |
+| Uji unit `WatermarkLayout` (jangkar, tile, opasitas, validasi, **deteksi watermark**, **geometri/Δ**, simulasi filter Auto Select) | **52 assertion, semua lulus** |
+| `python3 tools/static-checks.py` — menjaga #1/#2/#3 tidak hilang saat refactor | **22 pemeriksaan, semua lulus** |
+| Uji integrasi CorelDRAW (Ctrl+Z tunggal, exclude watermark, dokumen bersatuan inch) | belum bisa di sini — jalankan checklist §7 no. 3, 5, 10 di Windows |
+
+`tools/static-checks.py` sengaja dibuat tanpa dependensi (Python 3 stdlib) supaya bisa dipanggil manual atau ditambahkan sebagai step CI (`runs-on: ubuntu-latest`) tanpa mengubah job build Windows.
+
+
 ---
 
 ## 5. Yang perlu kamu putuskan (open questions)
@@ -210,11 +282,11 @@ Tidak ada perubahan lain yang diperlukan. Workflow CI tidak perlu diubah (file b
 **Fase 1 — sekarang (sudah ada di repo)**
 - Watermark teks + logo, jangkar/tile, opasitas, rotasi, layer khusus, hapus watermark, batch folder, undo grouping, laporan.
 
-**Fase 1.5 — perbaikan kecil yang saya sarankan ikut dikerjakan**
-1. Di `CollectMatchingShape` (kategori "Semua objek"), lewati shape yang namanya berawalan `WM_` → Auto Select tidak lagi menyalin watermark.
-2. Bungkus `CopyClicked` dengan `BeginCommandGroup("Salin objek")` / `EndCommandGroup` di `Finally`.
-3. Tambah flag `busy` global di `CopierForm` untuk mencegah klik ganda saat proses berjalan (pola ini sudah dipakai di `WatermarkDialog`).
-4. Set `corelDoc.Unit` sementara di `CopyClicked` juga, agar verifikasi jumlah shape tidak terpengaruh satuan.
+**Fase 1.5 — perbaikan kecil**
+1. ✅ `CollectMatchingShape` melewati shape watermark (`WM_*` / layer `WATERMARK`), termasuk yang tersembunyi di dalam grup — *selesai (§4.4)*.
+2. ✅ `CopyClicked` dibungkus `BeginCommandGroup` / `EndCommandGroup` di `Finally` — *selesai (§4.4)*.
+3. ⬜ Tambah flag `busy` global di `CopierForm` untuk mencegah klik ganda saat proses berjalan (pola ini sudah dipakai di `WatermarkDialog`).
+4. ✅ `corelDoc.Unit` dinormalisasi ke mm di `CopyClicked` + verifikasi geometri menggantikan verifikasi jumlah shape — *selesai (§4.4)*.
 
 **Fase 2**
 - Preset watermark tersimpan di `%APPDATA%\CorelPageCopier\watermark.json` (brand klien A, B, …).
@@ -242,7 +314,9 @@ Tidak ada perubahan lain yang diperlukan. Workflow CI tidak perlu diubah (file b
 | 7 | Mode tile, jarak 60×45 mm di A4 | pola rapi, tepi halaman tetap ter-cover, tidak menumpuk |
 | 8 | Rotasi 30°, jangkar kanan bawah, margin 8 mm | posisi & sudut benar |
 | 9 | **Hapus watermark** | semua `WM_*` hilang, objek desain utuh |
-| 10 | Auto Select "Semua objek" setelah watermark ada | (sekarang) watermark **ikut terpilih** → catat sebagai bug Fase 1.5 |
+| 10 | Auto Select "Semua objek" setelah watermark ada | hanya objek desain terpilih; `WM_*` & layer `WATERMARK` **tidak** terpilih |
+| 10b | Ctrl+Z setelah copy ke 5 halaman | kelima paste hilang sekaligus dalam satu langkah undo |
+| 10c | Copy di dokumen bersatuan inch/pixel | laporan "geometri cocok" muncul, satuan dokumen kembali seperti semula setelah operasi |
 | 11 | Batch 5 file, mode `_wm.cdr` | 5 file baru, file asli tidak berubah (cek timestamp/ukuran) |
 | 12 | Batch dengan 1 file sedang dibuka di CorelDRAW | file itu gagal dengan pesan jelas, file lain tetap diproses |
 | 13 | Batch, mode timpa file asli | konfirmasi muncul, isi file ter-update |
