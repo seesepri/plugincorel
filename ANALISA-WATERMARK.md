@@ -122,7 +122,7 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 75 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 81 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
 | `CorelPageCopier/assets/seta-logo-black.png` | varian **default**: glyph gelap untuk latar terang | — |
 | `CorelPageCopier/assets/seta-logo-white.png` | varian putih untuk latar gelap | — |
@@ -399,6 +399,20 @@ TargetPages=2,5
 - **Penting:** layer watermark di-set `Printable = True`, kalau tidak watermark bisa hilang dari PDF.
 - Kegagalan ekspor dicatat sebagai kegagalan per-file, bukan membatalkan watermark yang sudah terpasang.
 
+#### Catatan build: import implisit VB (temuan CI)
+
+CI Windows sempat **gagal** pada commit Fase 2 meskipun build lokal hijau:
+
+```
+BatchLog.vb(49,50): error BC30451: 'vbLf' is not declared.
+PresetStore.vb(179,52): error BC30451: 'vbCrLf' is not declared.
+WatermarkDialog.vb(644,30): error BC30451: 'InputBox' is not declared.
+```
+
+Penyebabnya: proyek ini **non-SDK** (`.vbproj` gaya lama), jadi tidak punya *implicit namespace imports*. Build lokal memakai SDK-style project yang otomatis meng-import `Microsoft.VisualBasic`, sehingga `vbCrLf`/`ChrW`/`InputBox` terlihat "ada" padahal tidak. `Program.vb` selama ini aman karena memakai nama lengkap (`Microsoft.VisualBasic.Constants.vbCrLf`).
+
+Perbaikan: `Imports Microsoft.VisualBasic` di `PresetStore.vb` & `BatchLog.vb`, dan `Microsoft.VisualBasic.Interaction.InputBox(...)` di dialog. Harness build lokal kini memakai `<DisableImplicitNamespaceImports>true</DisableImplicitNamespaceImports>` agar perilakunya sama dengan proyek asli, plus `tools/static-checks.py` menolak simbol VB implisit tanpa import yang sesuai.
+
 #### Verifikasi Fase 2
 
 | Uji | Hasil |
@@ -407,7 +421,7 @@ TargetPages=2,5
 | Unit test round-trip preset (semua field, newline, daftar halaman, nama case-insensitive, file rusak, simpan/muat file nyata, .tmp tidak tertinggal) | **lulus** |
 | Unit test CSV (header 7 kolom, escaping `;`/kutip/newline, BOM, header hanya sekali, baris ringkasan) | **lulus** |
 | Total unit test | **126 assertion lulus** |
-| `tools/static-checks.py` | **75 pemeriksaan lulus** |
+| `tools/static-checks.py` | **81 pemeriksaan lulus** |
 | Ekspor PDF & dialog preset di CorelDRAW nyata | belum bisa di sini — checklist §7 no. 20–23 |
 
 

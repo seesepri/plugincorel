@@ -641,7 +641,7 @@ Public Class WatermarkDialog
 
     Private Sub SavePresetClicked(sender As Object, e As EventArgs)
         Dim suggested As String = If(presetBox.SelectedIndex > 0, CStr(presetBox.SelectedItem), "Preset saya")
-        Dim name As String = InputBox("Nama preset:", "Simpan preset watermark", suggested)
+        Dim name As String = Microsoft.VisualBasic.Interaction.InputBox("Nama preset:", "Simpan preset watermark", suggested)
         If name Is Nothing Then Return
         name = name.Trim()
         If name.Length = 0 Then

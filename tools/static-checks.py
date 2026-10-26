@@ -190,6 +190,32 @@ def main():
     check("proofPdfCheck" in dialog_src and "csvLogCheck" in dialog_src,
           "UI punya opsi PDF proof dan log CSV")
 
+    print("Portabilitas build (proyek non-SDK tanpa import implisit):")
+    # Proyek .vbproj lama TIDAK punya import implisit Microsoft.VisualBasic
+    # (SDK-style punya, jadi build lokal bisa lolos padahal MSBuild Windows gagal).
+    implicit_symbols = ("vbCrLf", "vbLf", "vbCr", "ChrW(", "Chr(", "InputBox(", "MsgBox(")
+    # Pemakaian dengan nama lengkap aman tanpa import.
+    qualified_forms = (
+        "Microsoft.VisualBasic.Constants.vbCrLf",
+        "Microsoft.VisualBasic.Constants.vbLf",
+        "Microsoft.VisualBasic.Constants.vbCr",
+        "Microsoft.VisualBasic.Interaction.InputBox",
+        "Microsoft.VisualBasic.Interaction.MsgBox",
+        "Microsoft.VisualBasic.Strings.ChrW",
+        "Microsoft.VisualBasic.Strings.Chr",
+    )
+    for key in ("program", "layout", "engine", "dialog", "preset", "batchlog"):
+        src = read(key)
+        scrubbed = src
+        for form in qualified_forms:
+            scrubbed = scrubbed.replace(form, "")
+        leftover = [sym for sym in implicit_symbols if sym in scrubbed]
+        if not leftover:
+            check(True, key + ".vb: simbol VB aman untuk proyek non-SDK (import/nama lengkap)")
+        else:
+            check("Imports Microsoft.VisualBasic" in src,
+                  key + ".vb: memakai " + ", ".join(leftover) + " -> wajib 'Imports Microsoft.VisualBasic'")
+
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb",
                  "PresetStore.vb", "BatchLog.vb"):
