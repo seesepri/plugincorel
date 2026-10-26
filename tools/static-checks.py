@@ -6,6 +6,7 @@ Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   #1  Copy dibungkus BeginCommandGroup/EndCommandGroup (satu Ctrl+Z).
   #2  Auto Select mengecualikan objek watermark (WM_* / layer WATERMARK).
   #3  Satuan dokumen dinormalisasi ke mm selama operasi dan dipulihkan setelahnya.
+  Fase 1.5  Semua operasi panjang dijaga flag busy (anti re-entrancy DoEvents).
 
 Pakai:  python3 tools/static-checks.py
 Exit code 0 = semua lulus, 1 = ada pelanggaran.
@@ -42,12 +43,13 @@ def check(condition, message):
 
 
 def method_body(source, name):
-    """Ambil badan satu method (dari 'Sub name(' sampai 'End Sub' pertama)."""
-    start = source.find("Sub " + name + "(")
-    if start < 0:
-        return ""
-    end = source.find("End Sub", start)
-    return source[start:end]
+    """Ambil badan satu method: Sub maupun Function, sampai End Sub/End Function pertama."""
+    for kind, terminator in (("Sub ", "End Sub"), ("Function ", "End Function")):
+        start = source.find(kind + name + "(")
+        if start >= 0:
+            end = source.find(terminator, start)
+            return source[start:end] if end > 0 else source[start:]
+    return ""
 
 
 def main():
@@ -56,10 +58,15 @@ def main():
     engine = read("engine")
     vbproj = read("vbproj")
 
-    copy_body = method_body(program, "CopyClicked")
+    copy_wrapper = method_body(program, "CopyClicked")
+    copy_body = method_body(program, "CopyClickedCore")   # isi sebenarnya (wrapper busy ada di atasnya)
     collect_body = method_body(program, "CollectMatchingShape")
+    begin_body = method_body(program, "TryBeginOperation")
+    end_body = method_body(program, "EndOperation")
+    closing_body = method_body(program, "CopierFormClosing")
 
     print("Temuan #1 — undo grouping pada Copy:")
+    check("CopyClickedCore()" in copy_wrapper, "CopyClicked meneruskan ke CopyClickedCore")
     check("BeginCommandGroup" in copy_body, "CopyClicked memanggil BeginCommandGroup")
     check("EndCommandGroup" in copy_body, "CopyClicked memanggil EndCommandGroup")
     check(re.search(r"Finally[\s\S]*?EndCommandGroup", copy_body) is not None,
@@ -92,6 +99,34 @@ def main():
     check("IsWatermarkObjectName" in layout and "IsWatermarkLayerName" in layout,
           "helper deteksi shape/layer watermark tersedia di WatermarkLayout")
     check('ShapePrefix As String = "WM_"' in layout, "awalan shape watermark = WM_")
+
+    print("Flag busy global (Fase 1.5 #3):")
+    check("Class OperationGate" in layout, "OperationGate tersedia di WatermarkLayout (bisa diuji unit)")
+    check("Private ReadOnly busyGate As New OperationGate()" in program,
+          "CopierForm memakai OperationGate sebagai sumber status sibuk")
+    check(re.search(r"busy\s*=\s*(True|False)", program) is None,
+          "tidak ada penulisan langsung ke field busy (selalu lewat gate)")
+    check("If Not busyGate.TryBegin(operationName) Then" in begin_body,
+          "TryBeginOperation menolak operasi kedua")
+    check("busyGate.Release()" in end_body, "EndOperation melepas kunci lewat gate")
+    check("ApplyBusyState(False)" in begin_body and "ApplyBusyState(True)" in end_body,
+          "kontrol interaktif dinonaktifkan saat sibuk dan dipulihkan setelahnya")
+    check("UsesWaitCursor" not in program or "UseWaitCursor = True" in begin_body,
+          "kursor menunggu diaktifkan saat sibuk")
+
+    for handler in ("CopyClicked", "AutoSelectClicked", "NextMatchingPageClicked", "RefreshClicked"):
+        wrapper = method_body(program, handler)
+        core = method_body(program, handler + "Core")
+        guarded = ("TryBeginOperation(" in wrapper
+                   and handler + "Core()" in wrapper
+                   and re.search(r"Finally\s+EndOperation\(\)", wrapper) is not None)
+        check(guarded, handler + " dijaga guard + EndOperation di Finally")
+        check(len(core) > 0, handler + "Core berisi pekerjaan sebenarnya")
+
+    check(re.search(r"e\.Cancel = True", closing_body) is not None,
+          "jendela tidak bisa ditutup saat operasi berjalan")
+    check("AddHandler FormClosing, AddressOf CopierFormClosing" in program,
+          "handler FormClosing terdaftar di konstruktor")
 
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb"):

@@ -3,6 +3,7 @@ Option Strict Off
 Option Infer On
 Imports System
 Imports System.Collections.Generic
+Imports System.Diagnostics
 Imports System.Drawing
 Imports System.Runtime.InteropServices
 Imports System.Windows.Forms
@@ -35,6 +36,86 @@ Public Class CopierForm
     Private Const CDR_UNIT_MM As Integer = 3
     Private Const GEOMETRY_TOLERANCE_MM As Double = 0.5
 
+    ' ========================================================================
+    '  FASE 1.5 (#3): STATUS SIBUK GLOBAL
+    '  Application.DoEvents() di dalam loop panjang (paste ke banyak halaman,
+    '  pindai semua halaman) tetap memproses antrean pesan Windows, sehingga
+    '  user bisa menekan tombol yang sama/lain saat operasi masih berjalan.
+    '  Flag busy + penonaktifan kontrol menutup celah re-entrancy itu.
+    ' ========================================================================
+    Private ReadOnly busyGate As New OperationGate()
+    Private ReadOnly busyControlState As New Dictionary(Of Control, Boolean)()
+
+    ''' <summary>Status sibuk — sumber kebenaran ada di OperationGate (bisa diuji unit).</summary>
+    Private ReadOnly Property busy As Boolean
+        Get
+            Return busyGate.IsBusy
+        End Get
+    End Property
+
+    Private ReadOnly Property busyOperation As String
+        Get
+            Return busyGate.CurrentOperation
+        End Get
+    End Property
+
+    ''' <summary>
+    ''' Penjaga tunggal untuk semua operasi panjang. Mengembalikan False bila masih
+    ''' ada operasi berjalan sehingga handler pemanggil harus langsung Return.
+    ''' </summary>
+    Private Function TryBeginOperation(operationName As String) As Boolean
+        If Not busyGate.TryBegin(operationName) Then
+            statusLabel.Text = busyGate.BusyMessage
+            Return False
+        End If
+
+        busyControlState.Clear()
+        ApplyBusyState(False)
+        UseWaitCursor = True
+        Cursor = Cursors.WaitCursor
+        statusLabel.Text = operationName & " berjalan…"
+        Application.DoEvents()
+        Return True
+    End Function
+
+    ''' <summary>Selalu dipanggil di Finally agar UI tidak pernah terkunci permanen.</summary>
+    Private Sub EndOperation()
+        busyGate.Release()
+        ApplyBusyState(True)
+        busyControlState.Clear()
+        UseWaitCursor = False
+        Cursor = Cursors.Default
+    End Sub
+
+    Private Sub ApplyBusyState(enabled As Boolean)
+        ApplyBusyStateTo(Me, enabled)
+    End Sub
+
+    ''' <summary>
+    ''' Nonaktifkan/aktifkan ulang kontrol interaktif. Status awal tiap kontrol
+    ''' diingat, jadi kontrol yang memang sudah nonaktif tetap nonaktif setelahnya.
+    ''' </summary>
+    Private Sub ApplyBusyStateTo(parent As Control, enabled As Boolean)
+        For Each child As Control In parent.Controls
+            If TypeOf child Is Button OrElse TypeOf child Is CheckedListBox OrElse TypeOf child Is ComboBox Then
+                If Not busyControlState.ContainsKey(child) Then
+                    busyControlState(child) = child.Enabled
+                End If
+                child.Enabled = enabled AndAlso busyControlState(child)
+            End If
+            If child.HasChildren Then ApplyBusyStateTo(child, enabled)
+        Next
+    End Sub
+
+    ''' <summary>Mencegah jendela ditutup saat operasi panjang masih berjalan.</summary>
+    Private Sub CopierFormClosing(sender As Object, e As FormClosingEventArgs)
+        If Not busy Then Return
+        If e.CloseReason = CloseReason.UserClosing Then
+            e.Cancel = True
+            statusLabel.Text = "Tidak bisa ditutup: " & busyOperation & " masih berjalan. Tunggu hingga selesai."
+        End If
+    End Sub
+
     Public Sub New()
         Text = "Corel Page Copier"
         StartPosition = FormStartPosition.CenterScreen
@@ -44,6 +125,7 @@ Public Class CopierForm
         Font = New Font("Segoe UI", 9.0F)
         BuildUi()
         AddHandler Shown, AddressOf FormShown
+        AddHandler FormClosing, AddressOf CopierFormClosing
     End Sub
 
     
@@ -422,6 +504,15 @@ End Sub
     End Sub
 
     Private Sub RefreshClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Muat ulang halaman") Then Return
+        Try
+            RefreshClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub RefreshClickedCore()
         Try
             LoadPages()
         Catch ex As Exception
@@ -430,6 +521,16 @@ End Sub
     End Sub
 
     Private Sub CopyClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Salin objek") Then Return
+        Try
+            CopyClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub CopyClickedCore()
+        Dim stopwatch As Stopwatch = Stopwatch.StartNew()
         Dim targets As New List(Of Integer)()
         For Each obj As Object In pagesList.CheckedItems
             Dim p = DirectCast(obj, PageItem)
@@ -526,7 +627,7 @@ End Sub
             For targetPosition As Integer = 0 To validatedTargets.Count - 1
                 Dim pageIndex As Integer = validatedTargets(targetPosition)
                 statusLabel.Text = "Copy progres: " & (targetPosition + 1) & "/" & validatedTargets.Count & " — halaman tujuan " & pageIndex & "."
-                Application.DoEvents()
+                Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
                 Try
                     Dim destination As Object = corelDoc.Pages(pageIndex)
                     destination.Activate()
@@ -590,7 +691,8 @@ End Sub
                 "Catatan: posisi & ukuran objek hasil paste dibandingkan dengan objek sumber dalam mm (toleransi " &
                 GEOMETRY_TOLERANCE_MM & " mm). Satuan dokumen dipulihkan otomatis. Semua paste berada dalam satu grup undo — satu Ctrl+Z membatalkan seluruh operasi."
 
-            statusLabel.Text = "Copy selesai: " & succeeded & "/" & validatedTargets.Count & " halaman terverifikasi; " & failures.Count & " gagal/perlu diperiksa."
+            report &= Microsoft.VisualBasic.Constants.vbCrLf & "Durasi: " & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik."
+            statusLabel.Text = "Copy selesai: " & succeeded & "/" & validatedTargets.Count & " halaman terverifikasi; " & failures.Count & " gagal/perlu diperiksa (" & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik)."
             MessageBox.Show(report, "Hasil Corel Page Copier", MessageBoxButtons.OK, If(failures.Count = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
         Catch ex As Exception
             ShowError("Proses copy gagal: " & ex.Message)
@@ -611,6 +713,16 @@ End Sub
     End Sub
 
     Private Sub AutoSelectClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Auto Select") Then Return
+        Try
+            AutoSelectClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub AutoSelectClickedCore()
+        Dim stopwatch As Stopwatch = Stopwatch.StartNew()
         Try
             ConnectToCorel()
             Dim category As Integer = categoryBox.SelectedIndex
@@ -631,7 +743,7 @@ End Sub
             Dim total As Integer = 0
             For pageIndex As Integer = 1 To pageCount
                 statusLabel.Text = "Memindai progres: halaman " & pageIndex & "/" & pageCount & " | total objek cocok sementara: " & total & " | halaman aktif saat ini: " & CInt(corelDoc.ActivePage.Index) & "."
-                Application.DoEvents()
+                Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
                 Dim matches As List(Of Object) = GetMatchingShapes(corelDoc.Pages(pageIndex), category)
                 counts(pageIndex) = matches.Count
                 total += matches.Count
@@ -648,7 +760,7 @@ End Sub
             For Each kvp In counts
                 details.Add("Halaman " & kvp.Key & ": " & kvp.Value & " objek")
             Next
-            Dim report As String = "Pemindaian semua halaman selesai." & Microsoft.VisualBasic.Constants.vbCrLf & "Total objek cocok: " & total & Microsoft.VisualBasic.Constants.vbCrLf & "Halaman yang memiliki kecocokan: " & matchingPageIndices.Count & Microsoft.VisualBasic.Constants.vbCrLf & "Seleksi saat ini: halaman " & matchingPageIndices(0) & ". Gunakan tombol 'Pilih Halaman Cocok Berikutnya' untuk berpindah." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, details.ToArray())
+            Dim report As String = "Pemindaian semua halaman selesai." & Microsoft.VisualBasic.Constants.vbCrLf & "Total objek cocok: " & total & Microsoft.VisualBasic.Constants.vbCrLf & "Durasi pemindaian: " & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik." & Microsoft.VisualBasic.Constants.vbCrLf & "Halaman yang memiliki kecocokan: " & matchingPageIndices.Count & Microsoft.VisualBasic.Constants.vbCrLf & "Seleksi saat ini: halaman " & matchingPageIndices(0) & ". Gunakan tombol 'Pilih Halaman Cocok Berikutnya' untuk berpindah." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, details.ToArray())
             statusLabel.Text = "Pindai semua halaman: " & total & " objek; " & matchingPageIndices.Count & " halaman cocok."
             MessageBox.Show(report, "Auto Select — Semua Halaman", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Catch ex As Exception
@@ -657,6 +769,15 @@ End Sub
     End Sub
 
     Private Sub NextMatchingPageClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Pindah hasil") Then Return
+        Try
+            NextMatchingPageClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub NextMatchingPageClickedCore()
         Try
             ConnectToCorel()
             If matchingPageIndices.Count = 0 Then

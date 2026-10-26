@@ -313,3 +313,57 @@ Public Class WatermarkLayout
         Return delta
     End Function
 End Class
+
+''' <summary>
+''' Penjaga re-entrancy untuk operasi panjang (paste banyak halaman, pindai
+''' semua halaman, batch). Kelas murni tanpa COM/WinForms sehingga bisa diuji
+''' terpisah dari UI.
+'''
+''' Pola pakai:
+'''     If Not gate.TryBegin("Salin objek") Then Return
+'''     Try
+'''         ' ...operasi panjang...
+'''     Finally
+'''         gate.Release()
+'''     End Try
+''' </summary>
+Public Class OperationGate
+    Private _busy As Boolean = False
+    Private _currentOperation As String = ""
+
+    Public ReadOnly Property IsBusy As Boolean
+        Get
+            Return _busy
+        End Get
+    End Property
+
+    Public ReadOnly Property CurrentOperation As String
+        Get
+            Return _currentOperation
+        End Get
+    End Property
+
+    Public ReadOnly Property BusyMessage As String
+        Get
+            If Not _busy Then Return ""
+            Return "Masih memproses: " & _currentOperation & ". Tunggu hingga selesai."
+        End Get
+    End Property
+
+    ''' <summary>
+    ''' Ambil kunci operasi. False = masih ada operasi lain yang berjalan, sehingga
+    ''' pemanggil wajib berhenti tanpa melakukan apa pun.
+    ''' </summary>
+    Public Function TryBegin(operationName As String) As Boolean
+        If _busy Then Return False
+        _busy = True
+        _currentOperation = If(operationName, "")
+        Return True
+    End Function
+
+    ''' <summary>Lepas kunci. Aman dipanggil walau tidak sedang sibuk.</summary>
+    Public Sub Release()
+        _busy = False
+        _currentOperation = ""
+    End Sub
+End Class

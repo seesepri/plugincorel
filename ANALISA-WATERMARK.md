@@ -120,7 +120,9 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 |---|---|---|
 | `CorelPageCopier/WatermarkLayout.vb` | `WatermarkKind`, `WatermarkAnchor`, `WatermarkSettings` (+ validasi & deskripsi), `WatermarkLayout` (matematika jangkar/tile/opasitas) — **tanpa** COM & WinForms | ±300 |
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
-| `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±600 |
+| `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
+| `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
+| `tools/static-checks.py` | 41 pemeriksaan regresi untuk #1/#2/#3 + busy guard (dipanggil CI sebelum build) | 190 |
 
 ### 4.1 Verifikasi yang sudah dilakukan
 
@@ -265,6 +267,47 @@ Finally
 `tools/static-checks.py` sengaja dibuat tanpa dependensi (Python 3 stdlib) supaya bisa dipanggil manual atau ditambahkan sebagai step CI (`runs-on: ubuntu-latest`) tanpa mengubah job build Windows.
 
 
+### 4.5 Perbaikan Fase 1.5 #3 — flag `busy` global (selesai)
+
+**Masalahnya:** `Application.DoEvents()` dipakai di dalam loop panjang (paste ke banyak halaman, pindai semua halaman) supaya status progres ter-update. Tapi `DoEvents` juga **memproses klik berikutnya**, jadi user bisa menekan tombol lain (atau tombol yang sama) saat operasi pertama masih berjalan → dua operasi COM berjalan bersamaan pada dokumen yang sama.
+
+**Solusinya** — tiga lapis:
+
+1. **`OperationGate`** (kelas murni di `WatermarkLayout.vb`, tanpa COM/WinForms):
+   `TryBegin(nama)` mengembalikan `False` bila sudah sibuk, `Release()` melepas kunci, plus `IsBusy` / `CurrentOperation` / `BusyMessage`. Karena murni, seluruh perilakunya bisa diuji unit (15 assertion) tanpa Windows.
+2. **Guard di setiap handler panjang** — pola seragam, badan lama dipindah ke `<Nama>Core()`:
+
+   ```vb
+   Private Sub CopyClicked(sender As Object, e As EventArgs)
+       If Not TryBeginOperation("Salin objek") Then Return
+       Try
+           CopyClickedCore()
+       Finally
+           EndOperation()
+       End Try
+   End Sub
+   ```
+
+   Diterapkan ke `CopyClicked`, `AutoSelectClicked`, `NextMatchingPageClicked`, `RefreshClicked` (paling lama: pindai semua halaman). `EndOperation()` di `Finally` = kunci **tidak mungkin** tertinggal walau ada exception, sehingga UI tidak bisa "terkunci permanen".
+3. **Penonaktifan kontrol + proteksi tutup jendela:**
+   - `ApplyBusyState(False)` menonaktifkan semua `Button`, `ComboBox`, `CheckedListBox` secara rekursif; status awal tiap kontrol diingat di `busyControlState` sehingga kontrol yang memang sudah nonaktif tetap nonaktif setelah operasi.
+   - Kursor menunggu (`UseWaitCursor` + `Cursor`), dan status bar menampilkan nama operasi + "berjalan…".
+   - `CopierFormClosing` membatalkan penutupan jendela (`e.Cancel = True`) bila ada operasi berjalan, dengan pesan jelas — mencegah aplikasi mati di tengah loop COM.
+   - Klik yang tetap lolos (mis. lewat keyboard sebelum kontrol sempat disable) akan ditolak gate dan status berubah jadi *"Masih memproses: Salin objek. Tunggu hingga selesai."*
+
+**Bonus kecil:** durasi operasi (`Stopwatch`) kini ikut di laporan copy & pemindaian ("Durasi: 3.4 detik"), jadi user tahu apakah operasi memang lambat atau macet.
+
+#### Verifikasi
+
+| Uji | Hasil |
+|---|---|
+| Build net48 WinExe x64 | **succeeded, 0 error, 0 warning** |
+| Uji unit `OperationGate` (klik kedua ditolak, release idempoten, kunci lepas saat exception, pesan status) | **15 assertion lulus** |
+| Total uji unit `WatermarkLayout` + `OperationGate` | **67 assertion lulus** |
+| `tools/static-checks.py` — kini juga menjaga guard busy (wrapper + `Finally` + `FormClosing`) | **41 pemeriksaan lulus** |
+| Verifikasi nyata: klik dobel saat proses berjalan | belum bisa di sini — jalankan checklist §7 no. 16–18 |
+
+
 ---
 
 ## 5. Yang perlu kamu putuskan (open questions)
@@ -285,7 +328,7 @@ Finally
 **Fase 1.5 — perbaikan kecil**
 1. ✅ `CollectMatchingShape` melewati shape watermark (`WM_*` / layer `WATERMARK`), termasuk yang tersembunyi di dalam grup — *selesai (§4.4)*.
 2. ✅ `CopyClicked` dibungkus `BeginCommandGroup` / `EndCommandGroup` di `Finally` — *selesai (§4.4)*.
-3. ⬜ Tambah flag `busy` global di `CopierForm` untuk mencegah klik ganda saat proses berjalan (pola ini sudah dipakai di `WatermarkDialog`).
+3. ✅ Flag `busy` global di `CopierForm` (`OperationGate`) untuk mencegah klik ganda saat proses berjalan — *selesai (§4.5)*.
 4. ✅ `corelDoc.Unit` dinormalisasi ke mm di `CopyClicked` + verifikasi geometri menggantikan verifikasi jumlah shape — *selesai (§4.4)*.
 
 **Fase 2**
@@ -321,7 +364,11 @@ Finally
 | 12 | Batch dengan 1 file sedang dibuka di CorelDRAW | file itu gagal dengan pesan jelas, file lain tetap diproses |
 | 13 | Batch, mode timpa file asli | konfirmasi muncul, isi file ter-update |
 | 14 | CorelDRAW ditutup saat dialog terbuka | pesan "Tidak ada dokumen aktif", aplikasi tidak crash |
-| 15 | Build CI: push ke `main` | artifact ZIP berisi EXE versi baru (watermark ada di menu) |
+| 15 | Build CI: push ke `main` | job *Static checks* lulus lalu artifact ZIP berisi EXE versi baru |
+| 16 | Saat copy 20 halaman berjalan, klik tombol lain / klik dua kali | klik ditolak, tombol nonaktif, status: "Masih memproses: Salin objek…" |
+| 17 | Saat proses berjalan, tekan X (tutup jendela) | jendela tidak tertutup, muncul pesan bahwa operasi masih berjalan |
+| 18 | Setelah operasi selesai / gagal di tengah | semua tombol aktif kembali, kursor normal, aplikasi bisa dipakai lagi |
+| 19 | Batalkan dengan exception di tengah (mis. tutup dokumen saat copy) | laporan error muncul, UI tetap responsif (kunci busy tidak tertinggal) |
 
 ---
 
