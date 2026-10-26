@@ -512,6 +512,8 @@ Pemisahan folder/ekstensi dilakukan manual (`FileBaseName`/`FileNameOnly`) alih-
 
 ## 7. Checklist QA manual (sebelum rilis)
 
+> Versi langkah-demi-langkah yang lebih lengkap (data uji, angka ekspektasi, troubleshooting) ada di **[`PANDUAN-UJI.md`](PANDUAN-UJI.md)**.
+
 | # | Skenario | Ekspektasi |
 |---|---|---|
 | 1 | Dokumen 1 halaman, watermark teks tengah, opasitas 50% (default) | 1 shape `WM_TEXT`, layer `WATERMARK`, tampak transparan, tidak ada outline |

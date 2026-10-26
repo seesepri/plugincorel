@@ -38,4 +38,6 @@ File: `WatermarkLayout.vb` (model + matematika), `WatermarkEngine.vb` (COM),
 5. Jalankan aplikasi hasil build.
 
 ## Pengujian
+Panduan uji langkah-demi-langkah (data uji, angka ekspektasi, troubleshooting): `../PANDUAN-UJI.md`.
+
 Kode dan struktur arsip diperiksa secara statis. Build Visual Studio dan integrasi langsung dengan CorelDRAW 2022 belum dapat diverifikasi dalam lingkungan pembuatan arsip ini. Uji copy pada dokumen salinan terlebih dahulu sebelum digunakan pada dokumen penting.
