@@ -63,6 +63,16 @@ Buat folder `D:\uji-watermark\`. Buat dokumen berikut **di CorelDRAW**, lalu sim
 
 ## 3. Uji per fitur
 
+### 3.0 Tombol watermark terlihat (regresi layout)
+
+| Langkah | Hasil yang diharapkan |
+|---|---|
+| Buka aplikasi pada ukuran default | Tombol **`Watermark...`** terlihat di pojok kanan atas header, sebaris judul |
+| Perlebar jendela ke ±900 px, lalu perkecil ke minimum 520 px | Tombol tetap menempel di kanan (jarak ±2 px dari tepi), tidak terpotong, tidak hilang |
+| Perhatikan baris "Halaman aktif: …" | Teks panjang dipotong dengan "…" di dalam lebar jendela, tidak menembus keluar |
+
+> Riwayat: tombol ini pernah tidak terlihat sama sekali karena `Anchor Right` dipasang saat panel header masih 200 px (§4.9 `ANALISA-WATERMARK.md`). Kini dijaga pemeriksaan statis.
+
 ### 3.1 Koneksi & daftar halaman
 
 | Langkah | Hasil yang diharapkan |
@@ -193,6 +203,7 @@ Lakukan **setelah** §3.4 (watermark sudah ada).
 ## 5. Checklist (cetak / tempel di tiket)
 
 ```
+[ ] 3.0  Tombol Watermark... terlihat di pojok kanan atas (lebar 600 & 520)
 [ ] 3.1  Koneksi & daftar halaman
 [ ] 3.2  Copy + undo tunggal + geometri + dokumen inch
 [ ] 3.3  Auto Select mengecualikan watermark
@@ -222,6 +233,8 @@ Lakukan **setelah** §3.4 (watermark sudah ada).
 | Preset tidak muncul setelah restart | `%APPDATA%` tidak bisa ditulis (kebijakan IT) | Cek apakah `presets.ini` terbentuk; laporkan path & pesan error |
 | CSV berantakan di Excel | Regional setting memakai koma sebagai pemisah | File memakai `;` + BOM — buka dengan *Data ▸ From Text/CSV* bila tetap bermasalah |
 | Tombol "Buka folder hasil" nonaktif | Belum ada output, atau folder sudah dihapus/dipindah | Jalankan Terapkan/batch dulu |
+| Tombol **Watermark...** tidak terlihat di pojok kanan atas | Build lama (sebelum perbaikan §4.9) atau ukuran folder `rilis/` tidak cocok | Cek ukuran EXE: build dengan fitur watermark = **171.520 byte**. Bila benar tapi tetap tak terlihat, screenshot-kan jendelanya |
+| Tombol Watermark terlihat tapi terpotong saat jendela dikecilkan | Regresi layout (anchor) | Jalankan `python tools\static-checks.py` — pemeriksaan "UI-fix" akan gagal bila polanya rusak |
 | Copy lambat di dokumen besar | Normal — tiap halaman diukur untuk verifikasi geometri | Bandingkan "Durasi" di laporan |
 
 ---

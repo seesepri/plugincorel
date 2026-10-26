@@ -10,6 +10,8 @@ Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   UI        Tombol "Watermark..." ter-hook ke WatermarkDialog + logo bawaan tertanam.
   Fase 2    Preset %APPDATA%, log CSV batch, ekspor PDF proof.
   Fase 2b   Tombol "Buka folder hasil" + token teks per halaman ({page}/{order}).
+  UI-fix    Tombol "Watermark..." benar-benar berada di dalam area header (bukan
+            Anchor Right + Location absolut yang mendorongnya keluar layar).
 
 Pakai:  python3 tools/static-checks.py
 Exit code 0 = semua lulus, 1 = ada pelanggaran.
@@ -213,6 +215,19 @@ def main():
     check("UpdateOutputLocation" in dialog_src, "tombol diperbarui dari hasil operasi")
     check("CanOpenOutputFolder" in engine_src, "hasil membawa lokasi output")
     check("Imports System.Diagnostics" in dialog_src, "Process butuh Imports System.Diagnostics (proyek non-SDK)")
+
+    print("UI-fix - tombol Watermark harus benar-benar terlihat:")
+    program_src = read("program")
+    check("AnchorStyles.Right" not in program_src,
+          "tidak ada Anchor Right pada kontrol ber-Location absolut (penyebab tombol nyasar keluar layar)")
+    check("wmButton.Left = Math.Max(0, header.ClientSize.Width - wmButton.Width - 2)" in program_src,
+          "posisi tombol dihitung dari lebar header saat itu, bukan dari anchor")
+    check("AddHandler header.SizeChanged, layoutHeader" in program_src,
+          "tombol diposisikan ulang setiap header berubah ukuran")
+    check("layoutHeader(header, EventArgs.Empty)" in program_src,
+          "posisi awal dihitung setelah header masuk root (bukan saat panel masih 200 px)")
+    check("sourceLabel.Width = Math.Max(80, header.ClientSize.Width - 4)" in program_src,
+          "label status ikut disesuaikan agar AutoEllipsis benar")
 
     print("Portabilitas build (proyek non-SDK tanpa import implisit):")
     # Proyek .vbproj lama TIDAK punya import implisit Microsoft.VisualBasic

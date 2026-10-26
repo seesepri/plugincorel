@@ -122,7 +122,7 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 104 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 109 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
 | `CorelPageCopier/assets/seta-logo-black.png` | varian **default**: glyph gelap untuk latar terang | — |
 | `CorelPageCopier/assets/seta-logo-white.png` | varian putih untuk latar gelap | — |
@@ -470,7 +470,45 @@ Pemisahan folder/ekstensi dilakukan manual (`FileBaseName`/`FileNameOnly`) alih-
 | Unit test `{order}`: 10 skenario nama file (tanda hubung, garis bawah, tanpa angka, angka < 4 digit, path Windows, nama kosong/Nothing) | **lulus** |
 | Unit test lokasi output (`CanOpenOutputFolder`, `Merge`) | **lulus** |
 | Total unit test | **155 assertion lulus** |
-| `tools/static-checks.py` | **104 pemeriksaan lulus** |
+| `tools/static-checks.py` | **109 pemeriksaan lulus** |
+
+
+### 4.9 Bug UI: tombol "Watermark..." tidak terlihat (ditemukan saat uji manual, diperbaiki)
+
+**Gejala.** Saat uji manual di Windows + CorelDRAW 2022, jendela aplikasi tidak menampilkan tombol watermark sama sekali. Yang terlihat hanya judul, subjudul, dan baris status dokumen.
+
+**Diagnosis.** Tombol diletakkan dengan `Location = New Point(430, 22)` lalu `Anchor = Top Or Right` di dalam panel header yang memakai `Dock = Fill`. WinForms menyimpan jarak jangkar relatif terhadap ukuran induk **pada saat kontrol ditambahkan** — waktu itu panel header masih berukuran default `200 × 100` (docking baru berlaku setelah header masuk ke `TableLayoutPanel`). Jarak ke tepi kanan karenanya tercatat `200 − 554 = −354`, sehingga setelah header melebar menjadi `560` px posisi tombol menjadi `560 − 124 − (−354) = 790` — sekitar **234 px di luar tepi kanan**, pada semua lebar jendela.
+
+**Pembuktian (bukan dugaan).** Layout dijalankan headless dengan Mono + Xvfb, memuat assembly `.exe` hasil build VB yang sesungguhnya lalu membaca `Bounds` tiap tombol:
+
+| Build | Lebar form | Posisi tombol | Lebar header | Status |
+|---|---|---|---|---|
+| Sebelum perbaikan | 520 | x = 710 | 480 | di luar area |
+| Sebelum perbaikan | 600 | x = 790 | 560 | **di luar area** |
+| Sebelum perbaikan | 900 | x = 1090 | 860 | di luar area |
+| Sebelum perbaikan | 1400 | x = 1590 | 1360 | di luar area |
+| Sesudah perbaikan | 520 | x = 354 (right 478) | 480 | terlihat |
+| Sesudah perbaikan | 600 | x = 434 (right 558) | 560 | **terlihat** |
+| Sesudah perbaikan | 900 | x = 734 (right 858) | 860 | terlihat |
+| Sesudah perbaikan | 1400 | x = 1234 (right 1358) | 1360 | terlihat |
+
+**Perbaikan.** Jangkar tombol dan label diubah menjadi `Top Or Left` saja, lalu posisinya dihitung ulang setiap `header.SizeChanged`:
+
+```vb
+Dim layoutHeader As EventHandler =
+    Sub(sender As Object, e As EventArgs)
+        wmButton.Left = Math.Max(0, header.ClientSize.Width - wmButton.Width - 2)
+        sourceLabel.Width = Math.Max(80, header.ClientSize.Width - 4)
+    End Sub
+AddHandler header.SizeChanged, layoutHeader
+' ...
+root.Controls.Add(header, 0, 0)
+layoutHeader(header, EventArgs.Empty)   ' posisi awal setelah header punya ukuran final
+```
+
+Sekalian memperbaiki `sourceLabel`: dengan `Anchor Right` label itu melebar sampai 900 px pada header 560 px, sehingga `AutoEllipsis` tidak pernah aktif (teks bisa keluar jendela alih-alih dipotong dengan "...").
+
+**Pencegahan.** `tools/static-checks.py` sekarang menolak `AnchorStyles.Right` di `Program.vb` dan mewajibkan pola relayout di atas, agar bug ini tidak kembali saat UI diubah.
 
 
 ---
@@ -544,6 +582,8 @@ Pemisahan folder/ekstensi dilakukan manual (`FileBaseName`/`FileNameOnly`) alih-
 | 24 | Teks watermark `ORDER {order} · Hal. {page}/{pages}` pada dokumen 12 halaman bernama `INV-2026-0912 klien.cdr` | tiap halaman menampilkan nomor halaman berbeda, order = `INV-2026-0912` |
 | 25 | Nama file tanpa angka (`desain final.cdr`) | `{order}` berisi `desain final`, tidak kosong/aneh |
 | 26 | Setelah batch, klik "Buka folder hasil" | Explorer terbuka di folder output dengan file hasil tersorot |
+| 27 | Buka aplikasi (lebar default 600 px) | Tombol **Watermark...** terlihat di pojok kanan atas header |
+| 28 | Perlebar jendela ke 900 px lalu perkecil ke minimum 520 px | Tombol tetap menempel di kanan header, tidak terpotong/keluar layar |
 
 ---
 

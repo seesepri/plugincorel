@@ -174,7 +174,9 @@ Private Sub BuildUi()
     }
 
     sourceLabel.SetBounds(2, 55, 540, 18)
-    sourceLabel.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
+    ' Jangkar hanya Top/Left: lebar dihitung ulang di LayoutHeader (lihat catatan
+    ' soal bug Anchor Right di bawah).
+    sourceLabel.Anchor = AnchorStyles.Top Or AnchorStyles.Left
     sourceLabel.AutoEllipsis = True
     sourceLabel.Font = New Font("Segoe UI", 8.0F)
     sourceLabel.ForeColor = Color.FromArgb(45, 100, 150)
@@ -183,14 +185,33 @@ Private Sub BuildUi()
     ' otomatis terisi dari halaman yang sedang dicentang di daftar bawah.
     Dim wmButton As Button = CreateButton("Watermark...", False, 124)
     wmButton.Location = New Point(430, 22)
-    wmButton.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+
+    ' TEMUAN (uji manual 2026-10-26): tombol ini tidak pernah terlihat.
+    ' Penyebabnya Anchor Right pada kontrol ber-Location absolut: WinForms
+    ' menyimpan jarak ke tepi kanan induk SAAT kontrol ditambahkan. Pada saat
+    ' itu panel header masih berukuran default 200 px (docking baru berlaku
+    ' setelah header masuk root), sehingga jaraknya tercatat 200 - 554 = -354.
+    ' Begitu header melebar, Left menjadi headerWidth - 124 + 354 -> tombol
+    ' berada ~234 px di luar tepi kanan pada SEMUA lebar jendela.
+    ' Solusinya: jangkar Left saja, lalu posisikan ulang setiap header berubah.
+    wmButton.Anchor = AnchorStyles.Top Or AnchorStyles.Left
     AddHandler wmButton.Click, AddressOf OpenWatermarkDialog
+
+    Dim layoutHeader As EventHandler =
+        Sub(sender As Object, e As EventArgs)
+            wmButton.Left = Math.Max(0, header.ClientSize.Width - wmButton.Width - 2)
+            sourceLabel.Width = Math.Max(80, header.ClientSize.Width - 4)
+        End Sub
+    AddHandler header.SizeChanged, layoutHeader
 
     header.Controls.AddRange(New Control() {
         title, subtitle, sourceLabel, wmButton
     })
 
     root.Controls.Add(header, 0, 0)
+
+    ' Posisi awal (header sudah punya ukuran final setelah masuk root).
+    layoutHeader(header, EventArgs.Empty)
 
     ' PANEL 1: COPY HALAMAN
     Dim copyCard As Panel = CreateCard()
