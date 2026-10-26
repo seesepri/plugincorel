@@ -366,7 +366,7 @@ Public Class WatermarkDialog
         statusLabel.Height = 34
         statusLabel.TextAlign = ContentAlignment.MiddleLeft
         statusLabel.ForeColor = Color.FromArgb(35, 71, 105)
-        statusLabel.Text = "Siap. Pengaturan default: teks di tengah halaman, opasitas 25%."
+        statusLabel.Text = "Siap. Default: teks di tengah halaman, opasitas 50%."
 
         Dim buttonRow As New FlowLayoutPanel With {
             .Dock = DockStyle.Bottom,
@@ -437,7 +437,7 @@ Public Class WatermarkDialog
         fontBox.Text = "Segoe UI"
         fontSizeBox.Value = 24
         logoWidthBox.Value = 35
-        opacityBox.Value = 25
+        opacityBox.Value = 50
         rotationBox.Value = 0
         marginBox.Value = 8
         tileXBox.Value = 60

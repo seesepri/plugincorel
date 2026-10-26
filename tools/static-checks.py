@@ -144,6 +144,10 @@ def main():
           "logo bawaan terdaftar sebagai EmbeddedResource")
     check(os.path.exists(os.path.join(SRC, "assets", "seta-logo.png")),
           "aset seta-logo.png ada di repo")
+    check("OpacityPercent As Integer = 50" in layout, "default opasitas = 50%")
+    check("opacityBox.Value = 50" in read("dialog"), "UI default opasitas = 50%")
+    check(os.path.exists(os.path.join(SRC, "assets", "seta-logo-black.png")),
+          "aset versi hitam (seta-logo-black.png) tersedia")
 
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb"):

@@ -47,7 +47,7 @@ Public Class WatermarkSettings
     Public LogoWidthMm As Double = 35.0            ' 0 = pakai ukuran asli file
 
     ' --- Gaya ----------------------------------------------------------------
-    Public OpacityPercent As Integer = 25          ' 1..100 (100 = pekat)
+    Public OpacityPercent As Integer = 50          ' 1..100 (100 = pekat)
     Public RotationDeg As Double = 0.0             ' derajat, berlawanan arah jarum jam
 
     ' --- Penempatan ----------------------------------------------------------

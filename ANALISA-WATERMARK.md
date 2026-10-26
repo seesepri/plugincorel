@@ -97,7 +97,7 @@ Jenis (`Teks / Logo / Teks+Logo`), teks, font + ukuran, warna, path logo + lebar
 | Skala | `Shape.SizeWidth` / `SizeHeight` (setter) | tinggi dihitung otomatis dari lebar → rasio aman |
 | Posisi | `Shape.CenterX` / `CenterY` | origin CorelDRAW di **kiri-bawah** |
 | Rotasi | `Shape.Rotate(derajat)` | |
-| Transparansi | `Shape.Transparency.ApplyUniformTransparency(nilai)` + set `.Uniform` (workaround resmi Corel), `.AppliedTo = cdrApplyToFillAndOutline` (**= 2**), `.MergeMode = cdrMergeNormal` (**= 0**) | opasitas 25% → transparency 75% |
+| Transparansi | `Shape.Transparency.ApplyUniformTransparency(nilai)` + set `.Uniform` (workaround resmi Corel), `.AppliedTo = cdrApplyToFillAndOutline` (**= 2**), `.MergeMode = cdrMergeNormal` (**= 0**) | opasitas 50% (default) → transparency 50% |
 | Cari/hapus | `Shape.Name = "WM_*"` lalu iterasi `Layer.Shapes` | idempoten |
 | Batch | `Application.OpenDocument`, `Document.SaveAs`, `Document.Close` | simpan non-destruktif default |
 
@@ -122,9 +122,9 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 47 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 50 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
-| `CorelPageCopier/assets/seta-logo-white.png` | versi putih untuk desain gelap | — |
+| `CorelPageCopier/assets/seta-logo-black.png` | versi gelap untuk desain berlatar terang | — |
 
 ### 4.1 Verifikasi yang sudah dilakukan
 
@@ -327,18 +327,22 @@ cakupan "Halaman yang dicentang (N)" sudah terpilih
 
 **Logo:** `uploads/seta.jpg` (JPG latar putih) diolah menjadi **PNG transparan** di `CorelPageCopier/assets/`:
 
+Sumber logo (revisi): `uploads/seta.jpg` — sebenarnya **PNG**, glyph putih di atas latar gelap (luminance 26).
+
 | File | Isi |
 |---|---|
-| `assets/seta-logo.png` | versi hitam, 1311×1585 px, 58 KB — untuk desain terang |
-| `assets/seta-logo-white.png` | versi putih, 96 KB — untuk desain gelap/foto |
+| `assets/seta-logo.png` | bentuk asli (glyph **putih**), 1965×2378 px, 37 KB — tertanam di EXE |
+| `assets/seta-logo-black.png` | versi **gelap** untuk desain berlatar terang, 37 KB |
 
-Cara pengolahan: `alpha = 255 − luminance` (anti-aliasing tepi ikut mulus), noise JPEG di bawah ambang dibersihkan, inti logo dipekatkan ke alpha 255, lalu di-crop ke bounding box + padding transparan 2%. Hasil: **49,5% piksel transparan, sudut alpha = 0** — tidak ada kotak putih saat ditempel.
+Cara pengolahan: kontras dinormalisasi `alpha = (luminance − 26) / (255 − 26)` sehingga glyph jadi alpha penuh walau warna aslinya tidak murni putih, ambang bawah membersihkan sisa kompresi, lalu di-crop ke bounding box + padding transparan 2%. Hasil: **57,9% piksel transparan, sudut alpha = 0** — tidak ada kotak latar saat ditempel.
 
 Kenapa harus transparan: `Transparency.ApplyUniformTransparency` membuat **seluruh objek** tembus pandang, jadi latar putih pada JPG akan tetap terlihat sebagai kotak putih pudar di atas desain.
 
 `assets/seta-logo.png` didaftarkan sebagai `<EmbeddedResource>` di `.vbproj`, sehingga **ikut tertanam di EXE** — tidak perlu file pendamping saat distribusi. Dialog mengekstraknya ke `%TEMP%\CorelPageCopier\seta-logo.png` saat dipakai, karena `Layer.Import` membutuhkan path file. Checkbox **"Pakai logo bawaan SETA"** aktif otomatis bila resource terdeteksi; kalau tidak, user memilih logo sendiri lewat tombol **Pilih…**.
 
-**Verifikasi:** build net48 x64 dengan embedded resource — **succeeded, 0 error, 0 warning**; `tools/static-checks.py` naik ke **47 pemeriksaan** (termasuk hook tombol, cakupan halaman tercentang, keberadaan aset & `EmbeddedResource`); unit test tetap **67 assertion lulus**.
+**Default opasitas diubah ke 50%** (permintaan pengguna): `WatermarkSettings.OpacityPercent = 50` dan `opacityBox.Value = 50`. Mapping-nya `transparency = 100 − 50 = 50`, jadi logo tampil setengah transparan.
+
+**Verifikasi:** build net48 x64 dengan embedded resource — **succeeded, 0 error, 0 warning**; byte PNG di repo **identik** dengan yang tertanam di EXE (dicek langsung di dalam file .exe); `tools/static-checks.py` = **50 pemeriksaan** (termasuk hook tombol, cakupan halaman tercentang, aset logo, default opasitas 50%); unit test **69 assertion lulus**.
 
 
 ---
@@ -381,7 +385,7 @@ Kenapa harus transparan: `Transparency.ApplyUniformTransparency` membuat **selur
 
 | # | Skenario | Ekspektasi |
 |---|---|---|
-| 1 | Dokumen 1 halaman, watermark teks tengah, opasitas 25% | 1 shape `WM_TEXT`, layer `WATERMARK`, tampak transparan, tidak ada outline |
+| 1 | Dokumen 1 halaman, watermark teks tengah, opasitas 50% (default) | 1 shape `WM_TEXT`, layer `WATERMARK`, tampak transparan, tidak ada outline |
 | 2 | Tekan **Terapkan** 3× | tetap 1 watermark (idempoten) |
 | 3 | Ctrl+Z sekali | seluruh watermark hilang |
 | 4 | Dokumen 12 halaman ukuran campur (A4 + A5 + custom) | watermark pas di tiap halaman, tidak meleset skalanya |
