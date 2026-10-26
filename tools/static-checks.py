@@ -140,14 +140,22 @@ def main():
           "halaman tercentang diteruskan sebagai cakupan")
     check("Halaman yang dicentang" in read("dialog"), "dialog punya opsi cakupan halaman tercentang")
     check("EnsureBundledLogoFile" in read("dialog"), "dialog bisa mengekstrak logo bawaan")
-    check("assets\\seta-logo.png" in vbproj or "assets/seta-logo.png" in vbproj,
-          "logo bawaan terdaftar sebagai EmbeddedResource")
-    check(os.path.exists(os.path.join(SRC, "assets", "seta-logo.png")),
-          "aset seta-logo.png ada di repo")
+    check(vbproj.count("EmbeddedResource Include=") >= 2,
+          "logo bawaan terdaftar sebagai EmbeddedResource (2 varian)")
+    check(os.path.exists(os.path.join(SRC, "assets", "seta-logo-black.png")),
+          "aset seta-logo-black.png ada di repo")
+    check(os.path.exists(os.path.join(SRC, "assets", "seta-logo-white.png")),
+          "aset seta-logo-white.png ada di repo")
     check("OpacityPercent As Integer = 50" in layout, "default opasitas = 50%")
     check("opacityBox.Value = 50" in read("dialog"), "UI default opasitas = 50%")
-    check(os.path.exists(os.path.join(SRC, "assets", "seta-logo-black.png")),
-          "aset versi hitam (seta-logo-black.png) tersedia")
+    dialog_src = read("dialog")
+    check('logoVariantBox.Items.Add("Hitam' in dialog_src, "dialog punya opsi warna logo: hitam")
+    check('logoVariantBox.Items.Add("Putih' in dialog_src, "dialog punya opsi warna logo: putih")
+    check("logoVariantBox.SelectedIndex = 0" in dialog_src, "default varian logo = hitam")
+    check('If(logoVariantBox.SelectedIndex = 1, "seta-logo-white.png", "seta-logo-black.png")' in dialog_src,
+          "varian putih -> seta-logo-white.png, default -> seta-logo-black.png")
+    check("seta-logo-black.png" in vbproj and "seta-logo-white.png" in vbproj,
+          "kedua varian logo terdaftar sebagai EmbeddedResource")
 
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb"):

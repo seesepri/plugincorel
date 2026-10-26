@@ -50,6 +50,7 @@ Public Class WatermarkDialog
     Private ReadOnly statusLabel As New Label()
 
     Private ReadOnly bundledLogoCheck As New CheckBox()
+    Private ReadOnly logoVariantBox As New ComboBox()
     Private ReadOnly preselectedPages As New List(Of Integer)()
 
     Private selectedColor As Color = Color.FromArgb(120, 120, 120)
@@ -200,6 +201,15 @@ Public Class WatermarkDialog
         If HasBundledLogo() Then bundledLogoCheck.Checked = True
         AddHandler bundledLogoCheck.CheckedChanged, AddressOf BundledLogoToggled
         AddRow(grid, "Logo bawaan", bundledLogoCheck)
+
+        ' Varian warna logo bawaan: hitam (default) atau putih, tanpa perlu cari file.
+        logoVariantBox.DropDownStyle = ComboBoxStyle.DropDownList
+        logoVariantBox.Items.Add("Hitam — untuk desain berlatar terang")
+        logoVariantBox.Items.Add("Putih — untuk desain berlatar gelap")
+        logoVariantBox.SelectedIndex = 0
+        logoVariantBox.Dock = DockStyle.Fill
+        AddHandler logoVariantBox.SelectedIndexChanged, AddressOf LogoTyped
+        AddRow(grid, "Warna logo", logoVariantBox)
 
         logoWidthBox.Minimum = 0
         logoWidthBox.Maximum = 5000
@@ -430,8 +440,11 @@ Public Class WatermarkDialog
 
     Private Sub LoadDefaults()
         If bundledLogoCheck.Checked Then
-            logoPathBox.Text = "(logo bawaan SETA)"
+            logoPathBox.Text = BundledLogoCaption()
             logoPathBox.ReadOnly = True
+            logoVariantBox.Enabled = True
+        Else
+            logoVariantBox.Enabled = False
         End If
         textBox.Text = "CONTOH"
         fontBox.Text = "Segoe UI"
@@ -449,20 +462,30 @@ Public Class WatermarkDialog
     '  PEMILIH FILE / WARNA
     ' ========================================================================
 
-    ''' <summary>Nama resource logo bawaan (seta-logo.png) bila tertanam di assembly.</summary>
-    Private Function FindBundledLogoResource() As String
+    ''' <summary>Nama file resource untuk varian terpilih (0 = hitam, 1 = putih).</summary>
+    Private Function BundledLogoFileName() As String
+        Return If(logoVariantBox.SelectedIndex = 1, "seta-logo-white.png", "seta-logo-black.png")
+    End Function
+
+    ''' <summary>Cari resource logo bawaan berdasarkan nama file (mis. seta-logo-black.png).</summary>
+    Private Function FindBundledLogoResource(fileName As String) As String
         Try
             Dim asm As Reflection.Assembly = Reflection.Assembly.GetExecutingAssembly()
             For Each candidate As String In asm.GetManifestResourceNames()
-                If candidate.EndsWith("seta-logo.png", StringComparison.OrdinalIgnoreCase) Then Return candidate
+                If candidate.EndsWith("." & fileName, StringComparison.OrdinalIgnoreCase) OrElse
+                   candidate.EndsWith(fileName, StringComparison.OrdinalIgnoreCase) Then
+                    Return candidate
+                End If
             Next
         Catch
         End Try
         Return ""
     End Function
 
+    ''' <summary>True bila salah satu varian logo bawaan tertanam di assembly.</summary>
     Private Function HasBundledLogo() As Boolean
-        Return FindBundledLogoResource().Length > 0
+        Return FindBundledLogoResource("seta-logo-black.png").Length > 0 OrElse
+               FindBundledLogoResource("seta-logo-white.png").Length > 0
     End Function
 
     ''' <summary>
@@ -470,12 +493,13 @@ Public Class WatermarkDialog
     ''' bukan dari stream) dan kembalikan path-nya. String kosong bila gagal.
     ''' </summary>
     Private Function EnsureBundledLogoFile() As String
-        Dim resourceName As String = FindBundledLogoResource()
+        Dim fileName As String = BundledLogoFileName()
+        Dim resourceName As String = FindBundledLogoResource(fileName)
         If resourceName.Length = 0 Then Return ""
         Try
             Dim folder As String = Path.Combine(Path.GetTempPath(), "CorelPageCopier")
             Directory.CreateDirectory(folder)
-            Dim target As String = Path.Combine(folder, "seta-logo.png")
+            Dim target As String = Path.Combine(folder, fileName)
             Dim asm As Reflection.Assembly = Reflection.Assembly.GetExecutingAssembly()
             Using stream As IO.Stream = asm.GetManifestResourceStream(resourceName)
                 If stream Is Nothing Then Return ""
@@ -492,14 +516,31 @@ Public Class WatermarkDialog
     Private Sub BundledLogoToggled(sender As Object, e As EventArgs)
         Try
             logoPathBox.ReadOnly = bundledLogoCheck.Checked
+            logoVariantBox.Enabled = bundledLogoCheck.Checked
             If bundledLogoCheck.Checked Then
-                logoPathBox.Text = "(logo bawaan SETA)"
-            ElseIf logoPathBox.Text = "(logo bawaan SETA)" Then
+                logoPathBox.Text = BundledLogoCaption()
+            ElseIf IsBundledCaption(logoPathBox.Text) Then
                 logoPathBox.Text = ""
             End If
         Catch
         End Try
     End Sub
+
+    ''' <summary>Ganti varian logo bawaan -> perbarui keterangan di kolom path.</summary>
+    Private Sub LogoTyped(sender As Object, e As EventArgs)
+        Try
+            If bundledLogoCheck.Checked Then logoPathBox.Text = BundledLogoCaption()
+        Catch
+        End Try
+    End Sub
+
+    Private Function BundledLogoCaption() As String
+        Return If(logoVariantBox.SelectedIndex = 1, "(logo bawaan SETA — putih)", "(logo bawaan SETA — hitam)")
+    End Function
+
+    Private Function IsBundledCaption(value As String) As Boolean
+        Return value IsNot Nothing AndAlso value.StartsWith("(logo bawaan SETA", StringComparison.Ordinal)
+    End Function
 
     Private Sub PickColor(sender As Object, e As EventArgs)
         Using dlg As New ColorDialog()

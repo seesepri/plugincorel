@@ -15,10 +15,10 @@ Buka lewat tombol **"Watermark..."** di kanan atas jendela utama. Halaman yang s
 dicentang di daftar otomatis menjadi cakupan ("Halaman yang dicentang (N)").
 
 - Watermark **teks** dan/atau **logo** (PNG/JPG) di layer khusus `WATERMARK`.
-- **Logo bawaan SETA** sudah tertanam di aplikasi (PNG transparan, glyph putih) — cukup
-  centang "Pakai logo bawaan SETA", tidak perlu cari file.
-- Opasitas default **50%**. Versi gelap dari logo yang sama tersedia di
-  `assets/seta-logo-black.png` untuk desain berlatar terang (pilih manual lewat Pilih...).
+- **Logo bawaan SETA** tertanam di aplikasi dalam **dua varian** — cukup centang
+  "Pakai logo bawaan SETA" lalu pilih **Warna logo**: *Hitam* (default, untuk desain
+  berlatar terang) atau *Putih* (untuk desain berlatar gelap). Tidak perlu cari file.
+- Opasitas default **50%**.
 - Posisi jangkar 3×3 + margin, atau mode **tile** (pola berulang menutupi halaman).
 - Opasitas, rotasi, warna teks, font, lebar logo (mm), nomor halaman otomatis.
 - Cakupan: semua halaman atau halaman aktif saja.

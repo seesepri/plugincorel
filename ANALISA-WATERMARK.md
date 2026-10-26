@@ -122,9 +122,10 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 50 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 55 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
-| `CorelPageCopier/assets/seta-logo-black.png` | versi gelap untuk desain berlatar terang | — |
+| `CorelPageCopier/assets/seta-logo-black.png` | varian **default**: glyph gelap untuk latar terang | — |
+| `CorelPageCopier/assets/seta-logo-white.png` | varian putih untuk latar gelap | — |
 
 ### 4.1 Verifikasi yang sudah dilakukan
 
@@ -329,10 +330,14 @@ cakupan "Halaman yang dicentang (N)" sudah terpilih
 
 Sumber logo (revisi): `uploads/seta.jpg` — sebenarnya **PNG**, glyph putih di atas latar gelap (luminance 26).
 
-| File | Isi |
-|---|---|
-| `assets/seta-logo.png` | bentuk asli (glyph **putih**), 1965×2378 px, 37 KB — tertanam di EXE |
-| `assets/seta-logo-black.png` | versi **gelap** untuk desain berlatar terang, 37 KB |
+**Kedua varian tertanam di EXE** dan bisa dipilih dari dialog (dropdown **Warna logo**), tanpa perlu mencari file:
+
+| File | Isi | Default |
+|---|---|---|
+| `assets/seta-logo-black.png` | glyph gelap, untuk desain **berlatar terang** | ✅ default |
+| `assets/seta-logo-white.png` | bentuk asli (glyph putih), 1965×2378 px, 37 KB, untuk desain berlatar gelap | — |
+
+Pemetaan di dialog: `logoVariantBox` index 0 = *Hitam* → `seta-logo-black.png`, index 1 = *Putih* → `seta-logo-white.png`. Resource dicari lewat `FindBundledLogoResource(namaFile)` yang mencocokkan akhiran nama manifest (`CorelPageCopier.assets.seta-logo-*.png`), lalu diekstrak ke `%TEMP%\CorelPageCopier\<nama file>`. Dropdown otomatis nonaktif bila "Pakai logo bawaan" tidak dicentang, dan kolom path menampilkan keterangan varian aktif.
 
 Cara pengolahan: kontras dinormalisasi `alpha = (luminance − 26) / (255 − 26)` sehingga glyph jadi alpha penuh walau warna aslinya tidak murni putih, ambang bawah membersihkan sisa kompresi, lalu di-crop ke bounding box + padding transparan 2%. Hasil: **57,9% piksel transparan, sudut alpha = 0** — tidak ada kotak latar saat ditempel.
 
@@ -342,7 +347,7 @@ Kenapa harus transparan: `Transparency.ApplyUniformTransparency` membuat **selur
 
 **Default opasitas diubah ke 50%** (permintaan pengguna): `WatermarkSettings.OpacityPercent = 50` dan `opacityBox.Value = 50`. Mapping-nya `transparency = 100 − 50 = 50`, jadi logo tampil setengah transparan.
 
-**Verifikasi:** build net48 x64 dengan embedded resource — **succeeded, 0 error, 0 warning**; byte PNG di repo **identik** dengan yang tertanam di EXE (dicek langsung di dalam file .exe); `tools/static-checks.py` = **50 pemeriksaan** (termasuk hook tombol, cakupan halaman tercentang, aset logo, default opasitas 50%); unit test **69 assertion lulus**.
+**Verifikasi:** build net48 x64 dengan dua embedded resource — **succeeded, 0 error, 0 warning**; **kedua** PNG di repo ditemukan **utuh** di dalam file .exe (byte-identik); logika pencarian resource diuji langsung (nama manifest `CorelPageCopier.assets.seta-logo-black.png` & `...white.png` terdeteksi, tidak tertukar, bisa dibaca dan bertanda tangan PNG); `tools/static-checks.py` = **55 pemeriksaan**; unit test **77 assertion lulus**.
 
 
 ---

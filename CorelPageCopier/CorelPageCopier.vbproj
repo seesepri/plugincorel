@@ -37,8 +37,9 @@
     <Compile Include="WatermarkDialog.vb" />
   </ItemGroup>
   <ItemGroup>
-    <!-- Logo bawaan untuk fitur watermark (PNG transparan, ikut tertanam di EXE). -->
-    <EmbeddedResource Include="assets\seta-logo.png" />
+    <!-- Logo bawaan untuk fitur watermark (dua varian warna, tertanam di EXE). -->
+    <EmbeddedResource Include="assets\seta-logo-black.png" />
+    <EmbeddedResource Include="assets\seta-logo-white.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
 </Project>
