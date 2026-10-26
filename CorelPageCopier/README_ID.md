@@ -10,6 +10,26 @@ Versi ini menyederhanakan tampilan aplikasi dengan gaya Windows Forms yang lebih
 - Status progres saat memindai semua halaman.
 - Navigasi hasil berhenti pada hasil terakhir dan menampilkan pemberitahuan.
 
+## Fitur watermark (baru)
+Buka lewat tombol **"Watermark..."** di kanan atas jendela utama. Halaman yang sedang
+dicentang di daftar otomatis menjadi cakupan ("Halaman yang dicentang (N)").
+
+- Watermark **teks** dan/atau **logo** (PNG/JPG) di layer khusus `WATERMARK`.
+- **Logo bawaan SETA** tertanam di aplikasi dalam **dua varian** — cukup centang
+  "Pakai logo bawaan SETA" lalu pilih **Warna logo**: *Hitam* (default, untuk desain
+  berlatar terang) atau *Putih* (untuk desain berlatar gelap). Tidak perlu cari file.
+- Opasitas default **50%**.
+- Posisi jangkar 3×3 + margin, atau mode **tile** (pola berulang menutupi halaman).
+- Opasitas, rotasi, warna teks, font, lebar logo (mm), nomor halaman otomatis.
+- Cakupan: semua halaman atau halaman aktif saja.
+- **Hapus watermark** kapan saja (idempoten: tekan Terapkan berkali-kali tetap 1 watermark).
+- **Batch**: terapkan ke semua file `.cdr` dalam folder (+subfolder), default disimpan
+  sebagai `nama_wm.cdr` sehingga file asli tidak tertimpa.
+- Satu Ctrl+Z membatalkan seluruh operasi watermark pada satu dokumen.
+
+File: `WatermarkLayout.vb` (model + matematika), `WatermarkEngine.vb` (COM),
+`WatermarkDialog.vb` (UI). Detail desain & cara pasang: lihat `../ANALISA-WATERMARK.md`.
+
 ## Cara menjalankan
 1. Ekstrak ZIP ke folder baru.
 2. Buka `CorelPageCopier.vbproj` di Visual Studio.
@@ -18,4 +38,6 @@ Versi ini menyederhanakan tampilan aplikasi dengan gaya Windows Forms yang lebih
 5. Jalankan aplikasi hasil build.
 
 ## Pengujian
+Panduan uji langkah-demi-langkah (data uji, angka ekspektasi, troubleshooting): `../PANDUAN-UJI.md`.
+
 Kode dan struktur arsip diperiksa secara statis. Build Visual Studio dan integrasi langsung dengan CorelDRAW 2022 belum dapat diverifikasi dalam lingkungan pembuatan arsip ini. Uji copy pada dokumen salinan terlebih dahulu sebelum digunakan pada dokumen penting.

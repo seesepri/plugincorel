@@ -32,6 +32,17 @@
     <Compile Include="Program.vb">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="WatermarkLayout.vb" />
+    <Compile Include="WatermarkEngine.vb" />
+    <Compile Include="WatermarkDialog.vb" />
+    <Compile Include="WatermarkTokens.vb" />
+    <Compile Include="PresetStore.vb" />
+    <Compile Include="BatchLog.vb" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Logo bawaan untuk fitur watermark (dua varian warna, tertanam di EXE). -->
+    <EmbeddedResource Include="assets\seta-logo-black.png" />
+    <EmbeddedResource Include="assets\seta-logo-white.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
 </Project>

@@ -3,6 +3,7 @@ Option Strict Off
 Option Infer On
 Imports System
 Imports System.Collections.Generic
+Imports System.Diagnostics
 Imports System.Drawing
 Imports System.Runtime.InteropServices
 Imports System.Windows.Forms
@@ -32,6 +33,88 @@ Public Class CopierForm
     Private Const CDR_BITMAP As Integer = 5
     Private Const CDR_TEXT As Integer = 6
     Private Const CDR_GROUP As Integer = 7
+    Private Const CDR_UNIT_MM As Integer = 3
+    Private Const GEOMETRY_TOLERANCE_MM As Double = 0.5
+
+    ' ========================================================================
+    '  FASE 1.5 (#3): STATUS SIBUK GLOBAL
+    '  Application.DoEvents() di dalam loop panjang (paste ke banyak halaman,
+    '  pindai semua halaman) tetap memproses antrean pesan Windows, sehingga
+    '  user bisa menekan tombol yang sama/lain saat operasi masih berjalan.
+    '  Flag busy + penonaktifan kontrol menutup celah re-entrancy itu.
+    ' ========================================================================
+    Private ReadOnly busyGate As New OperationGate()
+    Private ReadOnly busyControlState As New Dictionary(Of Control, Boolean)()
+
+    ''' <summary>Status sibuk — sumber kebenaran ada di OperationGate (bisa diuji unit).</summary>
+    Private ReadOnly Property busy As Boolean
+        Get
+            Return busyGate.IsBusy
+        End Get
+    End Property
+
+    Private ReadOnly Property busyOperation As String
+        Get
+            Return busyGate.CurrentOperation
+        End Get
+    End Property
+
+    ''' <summary>
+    ''' Penjaga tunggal untuk semua operasi panjang. Mengembalikan False bila masih
+    ''' ada operasi berjalan sehingga handler pemanggil harus langsung Return.
+    ''' </summary>
+    Private Function TryBeginOperation(operationName As String) As Boolean
+        If Not busyGate.TryBegin(operationName) Then
+            statusLabel.Text = busyGate.BusyMessage
+            Return False
+        End If
+
+        busyControlState.Clear()
+        ApplyBusyState(False)
+        UseWaitCursor = True
+        Cursor = Cursors.WaitCursor
+        statusLabel.Text = operationName & " berjalan…"
+        Application.DoEvents()
+        Return True
+    End Function
+
+    ''' <summary>Selalu dipanggil di Finally agar UI tidak pernah terkunci permanen.</summary>
+    Private Sub EndOperation()
+        busyGate.Release()
+        ApplyBusyState(True)
+        busyControlState.Clear()
+        UseWaitCursor = False
+        Cursor = Cursors.Default
+    End Sub
+
+    Private Sub ApplyBusyState(enabled As Boolean)
+        ApplyBusyStateTo(Me, enabled)
+    End Sub
+
+    ''' <summary>
+    ''' Nonaktifkan/aktifkan ulang kontrol interaktif. Status awal tiap kontrol
+    ''' diingat, jadi kontrol yang memang sudah nonaktif tetap nonaktif setelahnya.
+    ''' </summary>
+    Private Sub ApplyBusyStateTo(parent As Control, enabled As Boolean)
+        For Each child As Control In parent.Controls
+            If TypeOf child Is Button OrElse TypeOf child Is CheckedListBox OrElse TypeOf child Is ComboBox Then
+                If Not busyControlState.ContainsKey(child) Then
+                    busyControlState(child) = child.Enabled
+                End If
+                child.Enabled = enabled AndAlso busyControlState(child)
+            End If
+            If child.HasChildren Then ApplyBusyStateTo(child, enabled)
+        Next
+    End Sub
+
+    ''' <summary>Mencegah jendela ditutup saat operasi panjang masih berjalan.</summary>
+    Private Sub CopierFormClosing(sender As Object, e As FormClosingEventArgs)
+        If Not busy Then Return
+        If e.CloseReason = CloseReason.UserClosing Then
+            e.Cancel = True
+            statusLabel.Text = "Tidak bisa ditutup: " & busyOperation & " masih berjalan. Tunggu hingga selesai."
+        End If
+    End Sub
 
     Public Sub New()
         Text = "Corel Page Copier"
@@ -42,6 +125,7 @@ Public Class CopierForm
         Font = New Font("Segoe UI", 9.0F)
         BuildUi()
         AddHandler Shown, AddressOf FormShown
+        AddHandler FormClosing, AddressOf CopierFormClosing
     End Sub
 
     
@@ -95,8 +179,15 @@ Private Sub BuildUi()
     sourceLabel.Font = New Font("Segoe UI", 8.0F)
     sourceLabel.ForeColor = Color.FromArgb(45, 100, 150)
 
+    ' Tombol masuk ke fitur watermark. Cakupan "Halaman yang dicentang"
+    ' otomatis terisi dari halaman yang sedang dicentang di daftar bawah.
+    Dim wmButton As Button = CreateButton("Watermark...", False, 124)
+    wmButton.Location = New Point(430, 22)
+    wmButton.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+    AddHandler wmButton.Click, AddressOf OpenWatermarkDialog
+
     header.Controls.AddRange(New Control() {
-        title, subtitle, sourceLabel
+        title, subtitle, sourceLabel, wmButton
     })
 
     root.Controls.Add(header, 0, 0)
@@ -420,6 +511,15 @@ End Sub
     End Sub
 
     Private Sub RefreshClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Muat ulang halaman") Then Return
+        Try
+            RefreshClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub RefreshClickedCore()
         Try
             LoadPages()
         Catch ex As Exception
@@ -428,6 +528,16 @@ End Sub
     End Sub
 
     Private Sub CopyClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Salin objek") Then Return
+        Try
+            CopyClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub CopyClickedCore()
+        Dim stopwatch As Stopwatch = Stopwatch.StartNew()
         Dim targets As New List(Of Integer)()
         For Each obj As Object In pagesList.CheckedItems
             Dim p = DirectCast(obj, PageItem)
@@ -437,6 +547,17 @@ End Sub
             MessageBox.Show("Centang setidaknya satu halaman tujuan selain halaman sumber.", "Corel Page Copier", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
+
+        ' Status dokumen yang wajib dipulihkan (Temuan #1 & #3).
+        Dim inCommandGroup As Boolean = False
+        Dim previousUnit As Integer = -1
+        Dim unitStored As Boolean = False
+        Dim sourceMeasured As Boolean = False
+        Dim srcCenterX As Double = 0
+        Dim srcCenterY As Double = 0
+        Dim srcWidth As Double = 0
+        Dim srcHeight As Double = 0
+
         Try
             ConnectToCorel()
             Dim actualSourcePage As Integer = CInt(corelDoc.ActivePage.Index)
@@ -467,46 +588,148 @@ End Sub
                 Return
             End If
 
+            ' --- Temuan #3: normalisasi satuan dokumen -------------------------
+            ' CenterX/CenterY/SizeWidth/SizeHeight dibaca & ditulis dalam Document.Unit,
+            ' yang bisa inch, pixel, atau point tergantung dokumen. Satuan dikunci ke mm
+            ' selama operasi agar perbandingan geometri sumber vs hasil paste konsisten,
+            ' lalu nilai aslinya dipulihkan di Finally.
+            Try
+                previousUnit = CInt(corelDoc.Unit)
+                unitStored = True
+            Catch
+            End Try
+            Try
+                corelDoc.Unit = CDR_UNIT_MM
+            Catch
+            End Try
+
+            ' Ukur objek sumber (gabungan ShapeRange) sebagai acuan verifikasi.
+            Try
+                srcCenterX = CDbl(selection.CenterX)
+                srcCenterY = CDbl(selection.CenterY)
+                srcWidth = CDbl(selection.SizeWidth)
+                srcHeight = CDbl(selection.SizeHeight)
+                sourceMeasured = True
+            Catch
+                sourceMeasured = False
+            End Try
+
             ' Copy berjalan langsung tanpa dialog konfirmasi. Objek sumber tidak pernah dihapus.
             corelDoc.Pages(actualSourcePage).Activate()
             selection.Copy()
+
+            ' --- Temuan #1: seluruh paste dalam satu grup undo ------------------
+            ' Satu Ctrl+Z membatalkan semua paste ke semua halaman tujuan, bukan
+            ' satu per satu. EndCommandGroup selalu dipanggil di Finally.
+            Try
+                corelDoc.BeginCommandGroup("Salin objek ke halaman")
+                inCommandGroup = True
+            Catch
+            End Try
+
             Dim succeeded As Integer = 0
+            Dim verifiedByCountOnly As Integer = 0
             Dim failures As New List(Of String)(validationFailures)
+
             For targetPosition As Integer = 0 To validatedTargets.Count - 1
                 Dim pageIndex As Integer = validatedTargets(targetPosition)
                 statusLabel.Text = "Copy progres: " & (targetPosition + 1) & "/" & validatedTargets.Count & " — halaman tujuan " & pageIndex & "."
-                Application.DoEvents()
+                Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
                 Try
                     Dim destination As Object = corelDoc.Pages(pageIndex)
                     destination.Activate()
-                    Dim beforeCount As Integer = CInt(destination.Shapes.Count)
-                    destination.ActiveLayer.Paste()
-                    Dim afterCount As Integer = CInt(destination.Shapes.Count)
-                    If afterCount <= beforeCount Then
-                        failures.Add("Halaman " & pageIndex & ": Paste tidak menambah shape tingkat atas yang terdeteksi; periksa hasil secara manual.")
-                    Else
+                    Dim layer As Object = destination.ActiveLayer
+                    Dim beforeCount As Integer = CInt(layer.Shapes.Count)
+                    layer.Paste()
+                    Dim added As Integer = CInt(layer.Shapes.Count) - beforeCount
+
+                    If added <= 0 Then
+                        failures.Add("Halaman " & pageIndex & ": Paste tidak menambah shape pada layer aktif; periksa hasil secara manual.")
+                        Continue For
+                    End If
+
+                    ' Verifikasi geometri (bukan hanya jumlah shape).
+                    If Not sourceMeasured Then
                         succeeded += 1
+                        verifiedByCountOnly += 1
+                        Continue For
+                    End If
+
+                    Dim pastedCenterX As Double = 0
+                    Dim pastedCenterY As Double = 0
+                    Dim pastedWidth As Double = 0
+                    Dim pastedHeight As Double = 0
+                    If Not TryMeasureTopShapes(layer, added, pastedCenterX, pastedCenterY, pastedWidth, pastedHeight) Then
+                        succeeded += 1
+                        verifiedByCountOnly += 1
+                        Continue For
+                    End If
+
+                    Dim delta As WatermarkLayout.GeometryDelta = WatermarkLayout.CompareGeometry(
+                        srcCenterX, srcCenterY, srcWidth, srcHeight,
+                        pastedCenterX, pastedCenterY, pastedWidth, pastedHeight)
+
+                    If delta.Matches(GEOMETRY_TOLERANCE_MM) Then
+                        succeeded += 1
+                    Else
+                        failures.Add("Halaman " & pageIndex & ": objek tertempel tetapi posisi/ukuran berbeda dari sumber (" &
+                                     delta.Describe() & ") — periksa hasil secara manual.")
                     End If
                 Catch pageEx As Exception
                     failures.Add("Halaman " & pageIndex & ": " & pageEx.Message)
                 End Try
             Next
+
             Try
                 corelDoc.Pages(actualSourcePage).Activate()
             Catch
                 ' Jangan menutupi laporan utama bila pemulihan halaman gagal.
             End Try
-            Dim report As String = "Copy selesai." & Microsoft.VisualBasic.Constants.vbCrLf & "Halaman tujuan valid diproses: " & validatedTargets.Count & "." & Microsoft.VisualBasic.Constants.vbCrLf & "Berhasil diverifikasi: " & succeeded & " halaman." & Microsoft.VisualBasic.Constants.vbCrLf & "Gagal/perlu diperiksa: " & failures.Count & " halaman."
+
+            Dim report As String = "Copy selesai." & Microsoft.VisualBasic.Constants.vbCrLf &
+                "Halaman tujuan valid diproses: " & validatedTargets.Count & "." & Microsoft.VisualBasic.Constants.vbCrLf &
+                "Berhasil diverifikasi (geometri cocok): " & (succeeded - verifiedByCountOnly) & " halaman." & Microsoft.VisualBasic.Constants.vbCrLf
+            If verifiedByCountOnly > 0 Then
+                report &= "Terverifikasi lewat jumlah shape saja: " & verifiedByCountOnly & " halaman (geometri tidak dapat diukur)." & Microsoft.VisualBasic.Constants.vbCrLf
+            End If
+            report &= "Gagal/perlu diperiksa: " & failures.Count & " halaman."
             If failures.Count > 0 Then report &= Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, failures.ToArray())
-            report &= Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & "Catatan: verifikasi berdasarkan perubahan jumlah shape tingkat atas; periksa hasil visual, khususnya grup, layer khusus, dan dokumen dengan objek bersarang."
-            statusLabel.Text = "Copy selesai: " & succeeded & "/" & validatedTargets.Count & " halaman terverifikasi; " & failures.Count & " gagal/perlu diperiksa."
+            report &= Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                "Catatan: posisi & ukuran objek hasil paste dibandingkan dengan objek sumber dalam mm (toleransi " &
+                GEOMETRY_TOLERANCE_MM & " mm). Satuan dokumen dipulihkan otomatis. Semua paste berada dalam satu grup undo — satu Ctrl+Z membatalkan seluruh operasi."
+
+            report &= Microsoft.VisualBasic.Constants.vbCrLf & "Durasi: " & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik."
+            statusLabel.Text = "Copy selesai: " & succeeded & "/" & validatedTargets.Count & " halaman terverifikasi; " & failures.Count & " gagal/perlu diperiksa (" & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik)."
             MessageBox.Show(report, "Hasil Corel Page Copier", MessageBoxButtons.OK, If(failures.Count = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
         Catch ex As Exception
             ShowError("Proses copy gagal: " & ex.Message)
+        Finally
+            If inCommandGroup Then
+                Try
+                    corelDoc.EndCommandGroup()
+                Catch
+                End Try
+            End If
+            If unitStored Then
+                Try
+                    corelDoc.Unit = previousUnit
+                Catch
+                End Try
+            End If
         End Try
     End Sub
 
     Private Sub AutoSelectClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Auto Select") Then Return
+        Try
+            AutoSelectClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub AutoSelectClickedCore()
+        Dim stopwatch As Stopwatch = Stopwatch.StartNew()
         Try
             ConnectToCorel()
             Dim category As Integer = categoryBox.SelectedIndex
@@ -527,7 +750,7 @@ End Sub
             Dim total As Integer = 0
             For pageIndex As Integer = 1 To pageCount
                 statusLabel.Text = "Memindai progres: halaman " & pageIndex & "/" & pageCount & " | total objek cocok sementara: " & total & " | halaman aktif saat ini: " & CInt(corelDoc.ActivePage.Index) & "."
-                Application.DoEvents()
+                Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
                 Dim matches As List(Of Object) = GetMatchingShapes(corelDoc.Pages(pageIndex), category)
                 counts(pageIndex) = matches.Count
                 total += matches.Count
@@ -544,7 +767,7 @@ End Sub
             For Each kvp In counts
                 details.Add("Halaman " & kvp.Key & ": " & kvp.Value & " objek")
             Next
-            Dim report As String = "Pemindaian semua halaman selesai." & Microsoft.VisualBasic.Constants.vbCrLf & "Total objek cocok: " & total & Microsoft.VisualBasic.Constants.vbCrLf & "Halaman yang memiliki kecocokan: " & matchingPageIndices.Count & Microsoft.VisualBasic.Constants.vbCrLf & "Seleksi saat ini: halaman " & matchingPageIndices(0) & ". Gunakan tombol 'Pilih Halaman Cocok Berikutnya' untuk berpindah." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, details.ToArray())
+            Dim report As String = "Pemindaian semua halaman selesai." & Microsoft.VisualBasic.Constants.vbCrLf & "Total objek cocok: " & total & Microsoft.VisualBasic.Constants.vbCrLf & "Durasi pemindaian: " & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik." & Microsoft.VisualBasic.Constants.vbCrLf & "Halaman yang memiliki kecocokan: " & matchingPageIndices.Count & Microsoft.VisualBasic.Constants.vbCrLf & "Seleksi saat ini: halaman " & matchingPageIndices(0) & ". Gunakan tombol 'Pilih Halaman Cocok Berikutnya' untuk berpindah." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, details.ToArray())
             statusLabel.Text = "Pindai semua halaman: " & total & " objek; " & matchingPageIndices.Count & " halaman cocok."
             MessageBox.Show(report, "Auto Select — Semua Halaman", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Catch ex As Exception
@@ -553,6 +776,15 @@ End Sub
     End Sub
 
     Private Sub NextMatchingPageClicked(sender As Object, e As EventArgs)
+        If Not TryBeginOperation("Pindah hasil") Then Return
+        Try
+            NextMatchingPageClickedCore()
+        Finally
+            EndOperation()
+        End Try
+    End Sub
+
+    Private Sub NextMatchingPageClickedCore()
         Try
             ConnectToCorel()
             If matchingPageIndices.Count = 0 Then
@@ -593,6 +825,11 @@ End Sub
     Private Sub CollectMatchingShape(shape As Object, category As Integer, matches As List(Of Object), depth As Integer)
         ' Batas kedalaman mencegah rekursi tidak berujung jika COM mengembalikan struktur tak terduga.
         If shape Is Nothing OrElse depth > 32 Then Return
+
+        ' Temuan #2: objek watermark (nama WM_* / layer WATERMARK) tidak boleh ikut
+        ' terpilih. Tanpa ini, "Salin ke halaman" akan menyalin watermark ke halaman
+        ' tujuan sehingga watermark menumpuk.
+        If IsWatermarkShape(shape, depth) Then Return
         Dim shapeType As Integer
         Try
             shapeType = CInt(shape.Type)
@@ -671,6 +908,110 @@ End Sub
         End If
         Return selectedCount
     End Function
+
+    ''' <summary>
+    ''' Deteksi objek watermark: nama shape berawalan WM_, berada di layer WATERMARK,
+    ''' atau grup yang berisi salah satunya. Dipakai Auto Select agar watermark tidak
+    ''' pernah ikut terpilih (Temuan #2).
+    ''' </summary>
+    Private Function IsWatermarkShape(shape As Object, Optional depth As Integer = 0) As Boolean
+        If shape Is Nothing OrElse depth > 32 Then Return False
+
+        Dim shapeName As String = Nothing
+        Dim layerName As String = Nothing
+        Try
+            shapeName = CStr(shape.Name)
+        Catch
+        End Try
+        Try
+            layerName = CStr(shape.Layer.Name)
+        Catch
+        End Try
+        If WatermarkLayout.IsWatermarkIdentity(shapeName, layerName) Then Return True
+
+        Try
+            If CInt(shape.Type) = CDR_GROUP Then
+                Dim children As Object = shape.Shapes
+                For i As Integer = 1 To CInt(children.Count)
+                    If IsWatermarkShape(children(i), depth + 1) Then Return True
+                Next
+            End If
+        Catch
+        End Try
+
+        Return False
+    End Function
+
+    ''' <summary>
+    ''' Ukur kotak pembatas gabungan dari N shape teratas pada sebuah layer (hasil Paste
+    ''' selalu berada paling atas). Mengembalikan False bila pengukuran tidak mungkin.
+    ''' Semua nilai dalam satuan dokumen saat ini (mm selama operasi copy).
+    ''' </summary>
+    Private Function TryMeasureTopShapes(layer As Object, count As Integer,
+                                         ByRef centerX As Double, ByRef centerY As Double,
+                                         ByRef width As Double, ByRef height As Double) As Boolean
+        If count <= 0 Then Return False
+        Try
+            Dim shapes As Object = layer.Shapes
+            If CInt(shapes.Count) < count Then Return False
+
+            Dim minX As Double = Double.MaxValue
+            Dim maxX As Double = Double.MinValue
+            Dim minY As Double = Double.MaxValue
+            Dim maxY As Double = Double.MinValue
+            Dim measured As Integer = 0
+
+            For i As Integer = 1 To count
+                Dim sh As Object = shapes(i)
+                Dim cx As Double = CDbl(sh.CenterX)
+                Dim cy As Double = CDbl(sh.CenterY)
+                Dim w As Double = CDbl(sh.SizeWidth)
+                Dim h As Double = CDbl(sh.SizeHeight)
+                minX = Math.Min(minX, cx - w / 2.0)
+                maxX = Math.Max(maxX, cx + w / 2.0)
+                minY = Math.Min(minY, cy - h / 2.0)
+                maxY = Math.Max(maxY, cy + h / 2.0)
+                measured += 1
+            Next
+
+            If measured = 0 Then Return False
+            centerX = (minX + maxX) / 2.0
+            centerY = (minY + maxY) / 2.0
+            width = maxX - minX
+            height = maxY - minY
+            Return True
+        Catch
+            Return False
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Buka dialog watermark. Halaman yang sedang dicentang diteruskan sebagai
+    ''' cakupan siap pakai ("Halaman yang dicentang (N)"), jadi alur
+    ''' "centang halaman -> Watermark" langsung nyambung dengan panel 01.
+    ''' </summary>
+    Private Sub OpenWatermarkDialog(sender As Object, e As EventArgs)
+        Dim selectedPages As New List(Of Integer)()
+        For Each obj As Object In pagesList.CheckedItems
+            Dim p = DirectCast(obj, PageItem)
+            If p.Index <> sourcePageIndex Then selectedPages.Add(p.Index)
+        Next
+        selectedPages.Sort()
+
+        Try
+            ConnectToCorel()
+            Using dlg As New WatermarkDialog(corelApp, selectedPages)
+                dlg.ShowDialog(Me)
+            End Using
+            ' Dokumen mungkin berubah (halaman/layer baru) -> segarkan daftar.
+            Try
+                LoadPages()
+            Catch
+            End Try
+        Catch ex As Exception
+            ShowError("Fitur watermark tidak dapat dibuka: " & ex.Message)
+        End Try
+    End Sub
 
     Private Sub ShowError(message As String)
         statusLabel.Text = "Terjadi kesalahan."
