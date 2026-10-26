@@ -32,6 +32,9 @@
     <Compile Include="Program.vb">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="WatermarkLayout.vb" />
+    <Compile Include="WatermarkEngine.vb" />
+    <Compile Include="WatermarkDialog.vb" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
 </Project>
