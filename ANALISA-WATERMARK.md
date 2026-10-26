@@ -122,7 +122,9 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 41 pemeriksaan regresi untuk #1/#2/#3 + busy guard (dipanggil CI sebelum build) | 190 |
+| `tools/static-checks.py` | 47 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
+| `CorelPageCopier/assets/seta-logo-white.png` | versi putih untuk desain gelap | — |
 
 ### 4.1 Verifikasi yang sudah dilakukan
 
@@ -134,7 +136,7 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | Pemeriksaan statis `tools/static-checks.py` (menjaga #1/#2/#3 saat refactor) | **22 pemeriksaan, semua lulus** |
 | Uji integrasi nyata ke CorelDRAW 2022 | **belum bisa** — tidak ada Windows/CorelDRAW di lingkungan ini (sama seperti catatan di `README_ID.md` repo) |
 
-### 4.2 Cara memasang (2 langkah, ±2 menit)
+### 4.2 Cara memasang (sudah dilakukan — arsip untuk referensi)
 
 **Langkah 1 — `CorelPageCopier.vbproj`** (sudah saya lakukan; kalau mau ulang manual):
 
@@ -146,6 +148,8 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 <Compile Include="WatermarkEngine.vb" />
 <Compile Include="WatermarkDialog.vb" />
 ```
+
+> **Status:** langkah 1 & 2 di bawah **sudah diterapkan** di repo (tombol "Watermark..." ada di header, lihat §4.6). Snippet ini disimpan sebagai referensi kalau perlu dipasang ulang di versi lain.
 
 **Langkah 2 — hook tombol di `CopierForm`** (di `Program.vb`, dua sisipan kecil):
 
@@ -306,6 +310,35 @@ Finally
 | Total uji unit `WatermarkLayout` + `OperationGate` | **67 assertion lulus** |
 | `tools/static-checks.py` — kini juga menjaga guard busy (wrapper + `Finally` + `FormClosing`) | **41 pemeriksaan lulus** |
 | Verifikasi nyata: klik dobel saat proses berjalan | belum bisa di sini — jalankan checklist §7 no. 16–18 |
+
+
+### 4.6 Tombol UI + logo bawaan SETA (selesai)
+
+**Tombol:** `Watermark...` di header `CopierForm` (kanan atas, `Anchor = Top or Right`). Alurnya nyambung dengan panel 01:
+
+```
+centang halaman di daftar  ->  klik "Watermark..."  ->  dialog terbuka dengan
+cakupan "Halaman yang dicentang (N)" sudah terpilih
+```
+
+- `OpenWatermarkDialog` mengumpulkan `pagesList.CheckedItems` (tanpa halaman sumber), mengurutkannya, lalu meneruskan ke `WatermarkDialog(corelApp, selectedPages)`.
+- Dialog kini punya **tiga** opsi cakupan: semua halaman, halaman aktif saja, atau **halaman yang dicentang (N)** — opsi ketiga hanya muncul bila ada halaman tercentang.
+- Setelah dialog ditutup, daftar halaman di-`LoadPages()` ulang (layer/halaman bisa berubah).
+
+**Logo:** `uploads/seta.jpg` (JPG latar putih) diolah menjadi **PNG transparan** di `CorelPageCopier/assets/`:
+
+| File | Isi |
+|---|---|
+| `assets/seta-logo.png` | versi hitam, 1311×1585 px, 58 KB — untuk desain terang |
+| `assets/seta-logo-white.png` | versi putih, 96 KB — untuk desain gelap/foto |
+
+Cara pengolahan: `alpha = 255 − luminance` (anti-aliasing tepi ikut mulus), noise JPEG di bawah ambang dibersihkan, inti logo dipekatkan ke alpha 255, lalu di-crop ke bounding box + padding transparan 2%. Hasil: **49,5% piksel transparan, sudut alpha = 0** — tidak ada kotak putih saat ditempel.
+
+Kenapa harus transparan: `Transparency.ApplyUniformTransparency` membuat **seluruh objek** tembus pandang, jadi latar putih pada JPG akan tetap terlihat sebagai kotak putih pudar di atas desain.
+
+`assets/seta-logo.png` didaftarkan sebagai `<EmbeddedResource>` di `.vbproj`, sehingga **ikut tertanam di EXE** — tidak perlu file pendamping saat distribusi. Dialog mengekstraknya ke `%TEMP%\CorelPageCopier\seta-logo.png` saat dipakai, karena `Layer.Import` membutuhkan path file. Checkbox **"Pakai logo bawaan SETA"** aktif otomatis bila resource terdeteksi; kalau tidak, user memilih logo sendiri lewat tombol **Pilih…**.
+
+**Verifikasi:** build net48 x64 dengan embedded resource — **succeeded, 0 error, 0 warning**; `tools/static-checks.py` naik ke **47 pemeriksaan** (termasuk hook tombol, cakupan halaman tercentang, keberadaan aset & `EmbeddedResource`); unit test tetap **67 assertion lulus**.
 
 
 ---

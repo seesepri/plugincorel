@@ -49,11 +49,20 @@ Public Class WatermarkDialog
     Private ReadOnly reportBox As New TextBox()
     Private ReadOnly statusLabel As New Label()
 
+    Private ReadOnly bundledLogoCheck As New CheckBox()
+    Private ReadOnly preselectedPages As New List(Of Integer)()
+
     Private selectedColor As Color = Color.FromArgb(120, 120, 120)
     Private busy As Boolean = False
 
-    Public Sub New(app As Object)
+    Public Sub New(app As Object, Optional preselected As List(Of Integer) = Nothing)
         corelApp = app
+        If preselected IsNot Nothing Then
+            For Each p As Integer In preselected
+                If Not preselectedPages.Contains(p) Then preselectedPages.Add(p)
+            Next
+            preselectedPages.Sort()
+        End If
 
         Text = "Watermark — Corel Page Copier"
         StartPosition = FormStartPosition.CenterParent
@@ -184,6 +193,14 @@ Public Class WatermarkDialog
         logoRow.Controls.Add(browseLogo, 1, 0)
         AddRow(grid, "File logo (PNG/JPG)", logoRow)
 
+        bundledLogoCheck.Text = "Pakai logo bawaan SETA (PNG transparan, sudah tertanam di aplikasi)"
+        bundledLogoCheck.AutoSize = True
+        bundledLogoCheck.Margin = New Padding(0, 6, 0, 0)
+        bundledLogoCheck.Enabled = HasBundledLogo()
+        If HasBundledLogo() Then bundledLogoCheck.Checked = True
+        AddHandler bundledLogoCheck.CheckedChanged, AddressOf BundledLogoToggled
+        AddRow(grid, "Logo bawaan", bundledLogoCheck)
+
         logoWidthBox.Minimum = 0
         logoWidthBox.Maximum = 5000
         logoWidthBox.DecimalPlaces = 1
@@ -245,8 +262,14 @@ Public Class WatermarkDialog
 
         ' Cakupan halaman
         scopeBox.DropDownStyle = ComboBoxStyle.DropDownList
-        scopeBox.Items.AddRange(New Object() {"Semua halaman", "Halaman aktif saja"})
-        scopeBox.SelectedIndex = 0
+        scopeBox.Items.Add("Semua halaman")
+        scopeBox.Items.Add("Halaman aktif saja")
+        If preselectedPages.Count > 0 Then
+            scopeBox.Items.Add("Halaman yang dicentang (" & preselectedPages.Count & ")")
+            scopeBox.SelectedIndex = 2
+        Else
+            scopeBox.SelectedIndex = 0
+        End If
         AddRow(grid, "Cakupan halaman", scopeBox)
 
         ' Layer & opsi
@@ -406,6 +429,10 @@ Public Class WatermarkDialog
     End Sub
 
     Private Sub LoadDefaults()
+        If bundledLogoCheck.Checked Then
+            logoPathBox.Text = "(logo bawaan SETA)"
+            logoPathBox.ReadOnly = True
+        End If
         textBox.Text = "CONTOH"
         fontBox.Text = "Segoe UI"
         fontSizeBox.Value = 24
@@ -421,6 +448,58 @@ Public Class WatermarkDialog
     ' ========================================================================
     '  PEMILIH FILE / WARNA
     ' ========================================================================
+
+    ''' <summary>Nama resource logo bawaan (seta-logo.png) bila tertanam di assembly.</summary>
+    Private Function FindBundledLogoResource() As String
+        Try
+            Dim asm As Reflection.Assembly = Reflection.Assembly.GetExecutingAssembly()
+            For Each candidate As String In asm.GetManifestResourceNames()
+                If candidate.EndsWith("seta-logo.png", StringComparison.OrdinalIgnoreCase) Then Return candidate
+            Next
+        Catch
+        End Try
+        Return ""
+    End Function
+
+    Private Function HasBundledLogo() As Boolean
+        Return FindBundledLogoResource().Length > 0
+    End Function
+
+    ''' <summary>
+    ''' Ekstrak logo bawaan ke folder temp (CorelDRAW mengimpor dari path file,
+    ''' bukan dari stream) dan kembalikan path-nya. String kosong bila gagal.
+    ''' </summary>
+    Private Function EnsureBundledLogoFile() As String
+        Dim resourceName As String = FindBundledLogoResource()
+        If resourceName.Length = 0 Then Return ""
+        Try
+            Dim folder As String = Path.Combine(Path.GetTempPath(), "CorelPageCopier")
+            Directory.CreateDirectory(folder)
+            Dim target As String = Path.Combine(folder, "seta-logo.png")
+            Dim asm As Reflection.Assembly = Reflection.Assembly.GetExecutingAssembly()
+            Using stream As IO.Stream = asm.GetManifestResourceStream(resourceName)
+                If stream Is Nothing Then Return ""
+                Using fileStream As IO.FileStream = IO.File.Create(target)
+                    stream.CopyTo(fileStream)
+                End Using
+            End Using
+            Return target
+        Catch
+            Return ""
+        End Try
+    End Function
+
+    Private Sub BundledLogoToggled(sender As Object, e As EventArgs)
+        Try
+            logoPathBox.ReadOnly = bundledLogoCheck.Checked
+            If bundledLogoCheck.Checked Then
+                logoPathBox.Text = "(logo bawaan SETA)"
+            ElseIf logoPathBox.Text = "(logo bawaan SETA)" Then
+                logoPathBox.Text = ""
+            End If
+        Catch
+        End Try
+    End Sub
 
     Private Sub PickColor(sender As Object, e As EventArgs)
         Using dlg As New ColorDialog()
@@ -472,6 +551,7 @@ Public Class WatermarkDialog
         Try
             doc = GetActiveDocument()
             ' Cakupan "halaman aktif saja": isi target dari halaman yang sedang aktif.
+            ' Cakupan "halaman yang dicentang" sudah terisi dari CopierForm.
             If Not settings.AllPages AndAlso settings.TargetPages.Count = 0 Then
                 settings.TargetPages.Add(CInt(doc.ActivePage.Index))
             End If
@@ -572,7 +652,7 @@ Public Class WatermarkDialog
         s.FontName = If(fontBox.Text.Trim().Length = 0, "Segoe UI", fontBox.Text.Trim())
         s.FontSize = CSng(fontSizeBox.Value)
         s.Color = selectedColor
-        s.LogoPath = logoPathBox.Text.Trim()
+        s.LogoPath = If(bundledLogoCheck.Checked, EnsureBundledLogoFile(), logoPathBox.Text.Trim())
         s.LogoWidthMm = CDbl(logoWidthBox.Value)
         s.OpacityPercent = CInt(opacityBox.Value)
         s.RotationDeg = CDbl(rotationBox.Value)
@@ -585,8 +665,14 @@ Public Class WatermarkDialog
         s.PerPageText = perPageCheck.Checked
         s.LockLayer = lockLayerCheck.Checked
         s.LayerName = If(layerNameBox.Text.Trim().Length = 0, "WATERMARK", layerNameBox.Text.Trim())
+        ' index 0 = semua halaman, 1 = halaman aktif, 2 = halaman yang dicentang
         s.AllPages = (scopeBox.SelectedIndex = 0)
         s.TargetPages.Clear()
+        If scopeBox.SelectedIndex = 2 Then
+            For Each p As Integer In preselectedPages
+                s.TargetPages.Add(p)
+            Next
+        End If
         Return s
     End Function
 

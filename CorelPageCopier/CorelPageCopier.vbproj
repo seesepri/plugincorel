@@ -36,5 +36,9 @@
     <Compile Include="WatermarkEngine.vb" />
     <Compile Include="WatermarkDialog.vb" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Logo bawaan untuk fitur watermark (PNG transparan, ikut tertanam di EXE). -->
+    <EmbeddedResource Include="assets\seta-logo.png" />
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
 </Project>

@@ -11,7 +11,13 @@ Versi ini menyederhanakan tampilan aplikasi dengan gaya Windows Forms yang lebih
 - Navigasi hasil berhenti pada hasil terakhir dan menampilkan pemberitahuan.
 
 ## Fitur watermark (baru)
+Buka lewat tombol **"Watermark..."** di kanan atas jendela utama. Halaman yang sedang
+dicentang di daftar otomatis menjadi cakupan ("Halaman yang dicentang (N)").
+
 - Watermark **teks** dan/atau **logo** (PNG/JPG) di layer khusus `WATERMARK`.
+- **Logo bawaan SETA** sudah tertanam di aplikasi (PNG transparan) — cukup centang
+  "Pakai logo bawaan SETA", tidak perlu cari file. Tersedia juga versi putih untuk
+  desain gelap di `assets/seta-logo-white.png` (pilih manual lewat tombol Pilih...).
 - Posisi jangkar 3×3 + margin, atau mode **tile** (pola berulang menutupi halaman).
 - Opasitas, rotasi, warna teks, font, lebar logo (mm), nomor halaman otomatis.
 - Cakupan: semua halaman atau halaman aktif saja.

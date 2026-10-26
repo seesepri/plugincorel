@@ -179,8 +179,15 @@ Private Sub BuildUi()
     sourceLabel.Font = New Font("Segoe UI", 8.0F)
     sourceLabel.ForeColor = Color.FromArgb(45, 100, 150)
 
+    ' Tombol masuk ke fitur watermark. Cakupan "Halaman yang dicentang"
+    ' otomatis terisi dari halaman yang sedang dicentang di daftar bawah.
+    Dim wmButton As Button = CreateButton("Watermark...", False, 124)
+    wmButton.Location = New Point(430, 22)
+    wmButton.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+    AddHandler wmButton.Click, AddressOf OpenWatermarkDialog
+
     header.Controls.AddRange(New Control() {
-        title, subtitle, sourceLabel
+        title, subtitle, sourceLabel, wmButton
     })
 
     root.Controls.Add(header, 0, 0)
@@ -977,6 +984,34 @@ End Sub
             Return False
         End Try
     End Function
+
+    ''' <summary>
+    ''' Buka dialog watermark. Halaman yang sedang dicentang diteruskan sebagai
+    ''' cakupan siap pakai ("Halaman yang dicentang (N)"), jadi alur
+    ''' "centang halaman -> Watermark" langsung nyambung dengan panel 01.
+    ''' </summary>
+    Private Sub OpenWatermarkDialog(sender As Object, e As EventArgs)
+        Dim selectedPages As New List(Of Integer)()
+        For Each obj As Object In pagesList.CheckedItems
+            Dim p = DirectCast(obj, PageItem)
+            If p.Index <> sourcePageIndex Then selectedPages.Add(p.Index)
+        Next
+        selectedPages.Sort()
+
+        Try
+            ConnectToCorel()
+            Using dlg As New WatermarkDialog(corelApp, selectedPages)
+                dlg.ShowDialog(Me)
+            End Using
+            ' Dokumen mungkin berubah (halaman/layer baru) -> segarkan daftar.
+            Try
+                LoadPages()
+            Catch
+            End Try
+        Catch ex As Exception
+            ShowError("Fitur watermark tidak dapat dibuka: " & ex.Message)
+        End Try
+    End Sub
 
     Private Sub ShowError(message As String)
         statusLabel.Text = "Terjadi kesalahan."

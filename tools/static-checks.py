@@ -7,6 +7,7 @@ Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   #2  Auto Select mengecualikan objek watermark (WM_* / layer WATERMARK).
   #3  Satuan dokumen dinormalisasi ke mm selama operasi dan dipulihkan setelahnya.
   Fase 1.5  Semua operasi panjang dijaga flag busy (anti re-entrancy DoEvents).
+  UI        Tombol "Watermark..." ter-hook ke WatermarkDialog + logo bawaan tertanam.
 
 Pakai:  python3 tools/static-checks.py
 Exit code 0 = semua lulus, 1 = ada pelanggaran.
@@ -127,6 +128,22 @@ def main():
           "jendela tidak bisa ditutup saat operasi berjalan")
     check("AddHandler FormClosing, AddressOf CopierFormClosing" in program,
           "handler FormClosing terdaftar di konstruktor")
+
+    print("UI watermark:")
+    check("OpenWatermarkDialog" in program, "handler OpenWatermarkDialog ada di CopierForm")
+    check('CreateButton("Watermark' in program, "tombol Watermark dibuat di header")
+    check("AddHandler wmButton.Click, AddressOf OpenWatermarkDialog" in program,
+          "klik tombol Watermark ter-hook")
+    check("New WatermarkDialog(corelApp, selectedPages)" in program,
+          "dialog menerima daftar halaman yang dicentang")
+    check("pagesList.CheckedItems" in method_body(program, "OpenWatermarkDialog"),
+          "halaman tercentang diteruskan sebagai cakupan")
+    check("Halaman yang dicentang" in read("dialog"), "dialog punya opsi cakupan halaman tercentang")
+    check("EnsureBundledLogoFile" in read("dialog"), "dialog bisa mengekstrak logo bawaan")
+    check("assets\\seta-logo.png" in vbproj or "assets/seta-logo.png" in vbproj,
+          "logo bawaan terdaftar sebagai EmbeddedResource")
+    check(os.path.exists(os.path.join(SRC, "assets", "seta-logo.png")),
+          "aset seta-logo.png ada di repo")
 
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb"):
