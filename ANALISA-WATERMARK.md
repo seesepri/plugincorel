@@ -122,12 +122,13 @@ Sudah ditambahkan ke repo (dan `CorelPageCopier.vbproj` sudah diperbarui):
 | `CorelPageCopier/WatermarkEngine.vb` | `WatermarkEngine`: `ApplyToDocument`, `RemoveFromDocument`, `ApplyToFolder` (batch), helper layer/shape/gaya, `WatermarkResult` + laporan | ±660 |
 | `CorelPageCopier/WatermarkDialog.vb` | Dialog UI lengkap (jenis, teks, font, warna, logo, opasitas, rotasi, jangkar, margin, tile, cakupan halaman, layer, batch folder, area laporan) | ±614 |
 | `CorelPageCopier/Program.vb` (dimodifikasi) | undo grouping + normalisasi satuan + verifikasi geometri (§4.4), flag `busy` global (§4.5), Auto Select mengecualikan watermark | 691 → 997 |
-| `tools/static-checks.py` | 81 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
+| `tools/static-checks.py` | 104 pemeriksaan regresi untuk #1/#2/#3 + busy guard + hook UI (dipanggil CI sebelum build) | 144 |
 | `CorelPageCopier/assets/seta-logo.png` | logo watermark hitam, PNG transparan, tertanam di EXE | — |
 | `CorelPageCopier/assets/seta-logo-black.png` | varian **default**: glyph gelap untuk latar terang | — |
 | `CorelPageCopier/assets/seta-logo-white.png` | varian putih untuk latar gelap | — |
 | `CorelPageCopier/PresetStore.vb` | preset watermark di `%APPDATA%` (INI, atomik) | ±330 |
-| `CorelPageCopier/BatchLog.vb` | log CSV batch (`;`, UTF-8 BOM, escaping) | ±120 |
+| `CorelPageCopier/BatchLog.vb` | log CSV batch (`;`, UTF-8 BOM, escaping) | ±110 |
+| `CorelPageCopier/WatermarkTokens.vb` | token teks per halaman (`{page}`, `{order}`, dst.) + ekstraksi nomor order | ±195 |
 
 ### 4.1 Verifikasi yang sudah dilakukan
 
@@ -425,6 +426,53 @@ Perbaikan: `Imports Microsoft.VisualBasic` di `PresetStore.vb` & `BatchLog.vb`, 
 | Ekspor PDF & dialog preset di CorelDRAW nyata | belum bisa di sini — checklist §7 no. 20–23 |
 
 
+### 4.8 Fase 2b — buka folder hasil + teks berbeda per halaman (selesai)
+
+#### (a) Tombol "Buka folder hasil" — `WatermarkDialog` + `WatermarkResult`
+
+- `WatermarkResult` kini membawa `OutputFolder` / `OutputFile` (folder & file hasil terakhir) plus `CanOpenOutputFolder` (cek `Directory.Exists` di dalam `Try/Catch`).
+- Diisi oleh: batch (`SaveAs` tiap file), dokumen tunggal (folder dokumen), dan ekspor PDF (folder PDF).
+- Tombol **Buka folder hasil** di footer dialog aktif setelah operasi berhasil, dan langsung **menyorot file hasil** di Explorer (`explorer.exe /select,"<file>"`); kalau tidak ada file spesifik, folder dibuka apa adanya.
+- Semua kegagalan (folder hilang, Explorer diblokir kebijakan) ditangani dengan pesan, tidak crash.
+
+#### (b) Teks watermark berbeda per halaman — `WatermarkTokens.vb`
+
+Token dievaluasi **per halaman** saat watermark dibuat:
+
+| Token | Isi |
+|---|---|
+| `{page}` | nomor halaman yang sedang diproses |
+| `{pages}` | jumlah halaman dokumen |
+| `{file}` | nama file dokumen tanpa ekstensi |
+| `{filename}` | nama file lengkap dengan ekstensi |
+| `{order}` | nomor order hasil ekstraksi nama file (lihat aturan di bawah) |
+| `{date}` / `{time}` | tanggal `yyyy-MM-dd` / jam `HH:mm` |
+
+Contoh teks: `ORDER {order} · Hal. {page}/{pages}` → di halaman 3 dari 12 dokumen `INV-2026-0912 klien budi.cdr` menjadi **"ORDER INV-2026-0912 · Hal. 3/12"**.
+
+**Aturan `{order}`** (deterministik, tanpa regex — penting agar hasilnya bisa ditebak user):
+
+1. Buang folder & ekstensi; hanya **spasi** dianggap pemisah (tanda hubung & garis bawah dipertahankan).
+2. Tanpa spasi → seluruh nama dipakai bila memuat ≥ 4 digit: `PO_2026_0042.cdr` → `PO_2026_0042`.
+3. Ada spasi → potongan pertama yang memuat ≥ 4 digit: `INV-2026-0912 klien budi.cdr` → `INV-2026-0912`.
+4. Tidak ada angka yang meyakinkan → nama file utuh: `desain final.cdr` → `desain final`.
+
+Token asing dibiarkan apa adanya (`{tidak_ada}` tetap `{tidak_ada}`), jadi teks biasa yang memakai kurung kurawal tidak rusak. `PerPageText` lama tetap jalan, dan tidak menambah "· Hal. n" lagi bila template sudah memakai `{page}` (tidak dobel).
+
+Pemisahan folder/ekstensi dilakukan manual (`FileBaseName`/`FileNameOnly`) alih-alih `Path.GetFileNameWithoutExtension`, karena di .NET Framework API itu hanya mengenali pemisah `\` — dengan penanganan manual, perilaku dan unit test konsisten di Windows maupun Linux.
+
+#### Verifikasi Fase 2b
+
+| Uji | Hasil |
+|---|---|
+| Build net48 x64 (7 file source + 2 resource) | **succeeded, 0 error, 0 warning** |
+| Unit test token: semua token, case-insensitive, token asing dibiarkan, `{}` kosong, context `Nothing`, `HasToken` tidak salah cocok `{page}` vs `{pages}` | **lulus** |
+| Unit test `{order}`: 10 skenario nama file (tanda hubung, garis bawah, tanpa angka, angka < 4 digit, path Windows, nama kosong/Nothing) | **lulus** |
+| Unit test lokasi output (`CanOpenOutputFolder`, `Merge`) | **lulus** |
+| Total unit test | **155 assertion lulus** |
+| `tools/static-checks.py` | **104 pemeriksaan lulus** |
+
+
 ---
 
 ## 5. Yang perlu kamu putuskan (open questions)
@@ -452,8 +500,8 @@ Perbaikan: `Imports Microsoft.VisualBasic` di `PresetStore.vb` & `BatchLog.vb`, 
 - ✅ Preset watermark tersimpan di `%APPDATA%\CorelPageCopier\presets.ini`.
 - ✅ Log CSV batch (file, halaman, jumlah shape, status, pesan, durasi) + baris ringkasan.
 - ✅ Ekspor PDF proof ber-watermark.
-- ⬜ Tombol "buka folder hasil" setelah batch (nice-to-have).
-- ⬜ Watermark per-halaman berbeda teks (mis. nomor order dari nama file).
+- ✅ Tombol "Buka folder hasil" setelah batch/PDF (§4.8).
+- ✅ Watermark per-halaman berbeda teks lewat token `{page}`, `{order}`, `{file}`, dst. (§4.8).
 
 **Fase 3**
 - Pindah ke **SDK-style project** (`net48` + `UseWindowsForms`) supaya tidak perlu daftar `<Compile>` manual lagi.
@@ -491,6 +539,9 @@ Perbaikan: `Imports Microsoft.VisualBasic` di `PresetStore.vb` & `BatchLog.vb`, 
 | 21 | Centang "Ekspor PDF proof" lalu Terapkan | muncul `<dokumen>_proof.pdf` di folder yang sama, watermark terlihat di PDF |
 | 22 | Batch 5 file dengan log CSV aktif | `watermark-log.csv` berisi header + 5 baris + 1 RINGKASAN; buka di Excel → kolom rapi, tidak menumpuk di satu sel |
 | 23 | Nama file klien mengandung `;` atau kutip | tetap satu sel di CSV (tidak menggeser kolom) |
+| 24 | Teks watermark `ORDER {order} · Hal. {page}/{pages}` pada dokumen 12 halaman bernama `INV-2026-0912 klien.cdr` | tiap halaman menampilkan nomor halaman berbeda, order = `INV-2026-0912` |
+| 25 | Nama file tanpa angka (`desain final.cdr`) | `{order}` berisi `desain final`, tidak kosong/aneh |
+| 26 | Setelah batch, klik "Buka folder hasil" | Explorer terbuka di folder output dengan file hasil tersorot |
 
 ---
 

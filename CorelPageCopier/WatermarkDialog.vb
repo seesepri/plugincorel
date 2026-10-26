@@ -14,6 +14,7 @@ Option Infer On
 
 Imports System
 Imports System.Collections.Generic
+Imports System.Diagnostics
 Imports System.Drawing
 Imports System.IO
 Imports System.Windows.Forms
@@ -55,6 +56,9 @@ Public Class WatermarkDialog
     Private ReadOnly proofPdfCheck As New CheckBox()
     Private ReadOnly csvLogCheck As New CheckBox()
     Private ReadOnly csvPathBox As New TextBox()
+    Private ReadOnly openFolderButton As New Button()
+    Private lastOutputFolder As String = ""
+    Private lastOutputFile As String = ""
     Private ReadOnly presetStore As New PresetStore()
     Private presetList As New List(Of WatermarkPreset)()
     Private ReadOnly preselectedPages As New List(Of Integer)()
@@ -178,6 +182,15 @@ Public Class WatermarkDialog
         textBox.DropDownStyle = ComboBoxStyle.DropDown
         textBox.Items.AddRange(New Object() {"CONTOH", "DRAFT", "RAHASIA", "SALINAN", "PROOF ONLY"})
         AddRow(grid, "Teks watermark", textBox)
+
+        Dim tokenHint As New Label With {
+            .Text = WatermarkTokens.HelpText(),
+            .AutoSize = True,
+            .ForeColor = Color.FromArgb(120, 133, 150),
+            .Font = New Font("Segoe UI", 7.5F),
+            .Margin = New Padding(0, 0, 0, 4)
+        }
+        AddRow(grid, "", tokenHint)
 
         ' Font + ukuran
         Dim fontRow As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .WrapContents = False, .Margin = New Padding(0)}
@@ -441,6 +454,20 @@ Public Class WatermarkDialog
             .FlowDirection = FlowDirection.RightToLeft,
             .WrapContents = False
         }
+        ' "Buka folder hasil": aktif setelah ada output (batch / PDF / dokumen tersimpan).
+        openFolderButton.Text = "Buka folder hasil"
+        openFolderButton.Width = 150
+        openFolderButton.Height = 32
+        openFolderButton.Margin = New Padding(8, 4, 0, 0)
+        openFolderButton.FlatStyle = FlatStyle.Flat
+        openFolderButton.UseVisualStyleBackColor = False
+        openFolderButton.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        openFolderButton.BackColor = Color.FromArgb(243, 246, 249)
+        openFolderButton.ForeColor = Color.FromArgb(47, 61, 79)
+        openFolderButton.Cursor = Cursors.Hand
+        openFolderButton.Enabled = False
+        AddHandler openFolderButton.Click, AddressOf OpenFolderClicked
+
         Dim closeButton As Button = FlatButton("Tutup", False)
         closeButton.Width = 100
         AddHandler closeButton.Click, Sub(s, e) Close()
@@ -453,6 +480,7 @@ Public Class WatermarkDialog
         buttonRow.Controls.Add(closeButton)
         buttonRow.Controls.Add(removeButton)
         buttonRow.Controls.Add(applyButton)
+        buttonRow.Controls.Add(openFolderButton)
 
         footer.Controls.Add(buttonRow)
         footer.Controls.Add(statusLabel)
@@ -601,6 +629,45 @@ Public Class WatermarkDialog
     Private Function IsBundledCaption(value As String) As Boolean
         Return value IsNot Nothing AndAlso value.StartsWith("(logo bawaan SETA", StringComparison.Ordinal)
     End Function
+
+    ' ========================================================================
+    '  BUKA FOLDER HASIL
+    ' ========================================================================
+
+    ''' <summary>Perbarui tombol "Buka folder hasil" dari hasil operasi terakhir.</summary>
+    Private Sub UpdateOutputLocation(result As WatermarkResult)
+        Try
+            If result Is Nothing Then Return
+            If Not String.IsNullOrEmpty(result.OutputFolder) Then lastOutputFolder = result.OutputFolder
+            If Not String.IsNullOrEmpty(result.OutputFile) Then lastOutputFile = result.OutputFile
+            openFolderButton.Enabled = Directory.Exists(lastOutputFolder)
+            If openFolderButton.Enabled Then
+                statusLabel.Text = statusLabel.Text & "  |  hasil: " & lastOutputFolder
+            End If
+        Catch
+        End Try
+    End Sub
+
+    Private Sub OpenFolderClicked(sender As Object, e As EventArgs)
+        Try
+            If lastOutputFolder Is Nothing OrElse Not Directory.Exists(lastOutputFolder) Then
+                MessageBox.Show("Folder hasil belum tersedia. Jalankan Terapkan atau batch terlebih dahulu.",
+                                "Buka folder", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+
+            ' Bila ada file hasil, langsung sorot filenya di Explorer.
+            Dim quote As String = Convert.ToChar(34).ToString()
+            If lastOutputFile IsNot Nothing AndAlso File.Exists(lastOutputFile) Then
+                Process.Start("explorer.exe", "/select," & quote & lastOutputFile & quote)
+            Else
+                Process.Start("explorer.exe", quote & lastOutputFolder & quote)
+            End If
+        Catch ex As Exception
+            MessageBox.Show("Tidak dapat membuka folder:" & Environment.NewLine & lastOutputFolder &
+                            Environment.NewLine & ex.Message, "Buka folder", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End Try
+    End Sub
 
     ' ========================================================================
     '  PRESET (Fase 2)
@@ -810,6 +877,7 @@ Public Class WatermarkDialog
             Dim engine As New WatermarkEngine()
             AddHandler engine.Progress, Sub(message As String) UpdateStatus(message)
             Dim result As WatermarkResult = engine.ApplyToDocument(doc, settings)
+            UpdateOutputLocation(result)
             reportBox.Text = "Pengaturan: " & settings.Describe() & Environment.NewLine & Environment.NewLine & result.ToReport()
             reportBox.SelectionStart = 0
             reportBox.ScrollToCaret()
@@ -877,6 +945,7 @@ Public Class WatermarkDialog
             AddHandler engine.Progress, Sub(message As String) UpdateStatus(message)
             Dim result As WatermarkResult = engine.ApplyToFolder(
                 corelApp, folderBox.Text.Trim(), settings, subfolderCheck.Checked, saveInPlaceCheck.Checked)
+            UpdateOutputLocation(result)
             reportBox.Text = "BATCH — " & settings.Describe() & Environment.NewLine & Environment.NewLine & result.ToReport()
             UpdateStatus("Batch selesai: " & result.DocumentsTouched & " dokumen tersimpan, " & result.Failures.Count & " gagal.")
         Catch ex As Exception

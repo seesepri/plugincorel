@@ -35,6 +35,7 @@
     <Compile Include="WatermarkLayout.vb" />
     <Compile Include="WatermarkEngine.vb" />
     <Compile Include="WatermarkDialog.vb" />
+    <Compile Include="WatermarkTokens.vb" />
     <Compile Include="PresetStore.vb" />
     <Compile Include="BatchLog.vb" />
   </ItemGroup>

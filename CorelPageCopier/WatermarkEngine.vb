@@ -38,6 +38,21 @@ Public Class WatermarkResult
     Public ProofPdfFiles As New List(Of String)()
     Public LogRowsWritten As Integer = 0
     Public DurationSeconds As Double = 0
+    ''' <summary>Folder hasil terakhir (untuk tombol "Buka folder hasil").</summary>
+    Public OutputFolder As String = ""
+    ''' <summary>File hasil terakhir (dipakai untuk explorer /select).</summary>
+    Public OutputFile As String = ""
+
+    Public ReadOnly Property CanOpenOutputFolder As Boolean
+        Get
+            If String.IsNullOrEmpty(OutputFolder) Then Return False
+            Try
+                Return Directory.Exists(OutputFolder)
+            Catch
+                Return False
+            End Try
+        End Get
+    End Property
 
     Public ReadOnly Property Ok As Boolean
         Get
@@ -55,6 +70,12 @@ Public Class WatermarkResult
         Log.AddRange(other.Log)
         ProofPdfFiles.AddRange(other.ProofPdfFiles)
         LogRowsWritten += other.LogRowsWritten
+        If String.IsNullOrEmpty(OutputFolder) AndAlso Not String.IsNullOrEmpty(other.OutputFolder) Then
+            OutputFolder = other.OutputFolder
+        End If
+        If String.IsNullOrEmpty(OutputFile) AndAlso Not String.IsNullOrEmpty(other.OutputFile) Then
+            OutputFile = other.OutputFile
+        End If
     End Sub
 
     Public Function ToReport() As String
@@ -76,6 +97,9 @@ Public Class WatermarkResult
             Next
         End If
         If LogRowsWritten > 0 Then sb.AppendLine("Baris log CSV    : " & LogRowsWritten)
+        If OutputFolder IsNot Nothing AndAlso OutputFolder.Length > 0 Then
+            sb.AppendLine("Folder hasil     : " & OutputFolder)
+        End If
         sb.AppendLine("Kegagalan        : " & Failures.Count)
         If Failures.Count > 0 Then
             sb.AppendLine()
@@ -179,6 +203,12 @@ Public Class WatermarkEngine
                 Return localResult
             End If
 
+            ' Konteks token: nama file & jumlah halaman diketahui sekali per dokumen.
+            Dim tokenContext As New WatermarkTokenContext()
+            tokenContext.FileName = SafeDocumentName(doc)
+            tokenContext.PageCount = pageCount
+            tokenContext.Now = DateTime.Now
+
             Report("Mulai watermark: " & settings.Describe())
 
             ' Satu grup perintah => pengguna cukup Ctrl+Z sekali untuk membatalkan.
@@ -193,7 +223,7 @@ Public Class WatermarkEngine
                 Dim pageIndex As Integer = targets(pos)
                 RaiseEvent Progress("Watermark " & (pos + 1) & "/" & targets.Count & " — halaman " & pageIndex & "…")
                 Try
-                    Dim created As Integer = ApplyToPage(doc, pages(pageIndex), pageIndex, settings)
+                    Dim created As Integer = ApplyToPage(doc, pages(pageIndex), pageIndex, settings, tokenContext)
                     localResult.ShapesCreated += created
                     localResult.PagesPassed += 1
                     Report("Halaman " & pageIndex & ": " & created & " shape")
@@ -234,11 +264,24 @@ Public Class WatermarkEngine
         documentTimer.Stop()
         localResult.DurationSeconds = documentTimer.Elapsed.TotalSeconds
 
+        Try
+            Dim docPath As String = CStr(doc.FilePath)
+            If Not String.IsNullOrEmpty(docPath) Then
+                localResult.OutputFolder = Path.GetDirectoryName(docPath)
+                localResult.OutputFile = docPath
+            End If
+        Catch
+        End Try
+
         ' --- Output tambahan (Fase 2) -------------------------------------
         If localResult.PagesPassed > 0 Then
             If settings.ExportProofPdf Then
                 Dim pdfPath As String = TryPublishProofPdf(doc, settings, localResult)
-                If pdfPath IsNot Nothing Then localResult.ProofPdfFiles.Add(pdfPath)
+                If pdfPath IsNot Nothing Then
+                    localResult.ProofPdfFiles.Add(pdfPath)
+                    localResult.OutputFolder = Path.GetDirectoryName(pdfPath)
+                    localResult.OutputFile = pdfPath
+                End If
             End If
             If settings.WriteCsvLog Then
                 Dim entry As New BatchLogEntry()
@@ -333,7 +376,7 @@ Public Class WatermarkEngine
     ' ========================================================================
 
     Private Function ApplyToPage(doc As Object, page As Object, pageIndex As Integer,
-                                 settings As WatermarkSettings) As Integer
+                                 settings As WatermarkSettings, context As WatermarkTokenContext) As Integer
         Dim layer As Object = EnsureLayer(page, settings.LayerName)
 
         If settings.ReplaceExisting Then RemoveWatermarkShapes(page)
@@ -344,8 +387,14 @@ Public Class WatermarkEngine
 
         ' --- 1. Objek teks ---------------------------------------------------
         If settings.Kind = WatermarkKind.TextOnly OrElse settings.Kind = WatermarkKind.TextAndLogo Then
-            Dim body As String = settings.Text
-            If settings.PerPageText Then body = body & " · Hal. " & pageIndex
+            ' Token dievaluasi per halaman ({page}, {order}, {file}, ...).
+            If context IsNot Nothing Then context.PageIndex = pageIndex
+            Dim body As String = WatermarkTokens.Expand(settings.Text, context)
+            ' Perilaku lama tetap dijaga: tambahkan "Hal. n" bila diminta dan
+            ' template belum memakai token {page}.
+            If settings.PerPageText AndAlso Not WatermarkTokens.HasToken(settings.Text, "page") Then
+                body = body & " · Hal. " & pageIndex
+            End If
 
             Dim textShape As Object = layer.CreateArtisticText(
                 0, 0, body, 0, -1, settings.FontName, settings.FontSize)
@@ -520,6 +569,8 @@ Public Class WatermarkEngine
                 Try
                     doc.SaveAs(targetPath)
                     localResult.DocumentsTouched += 1
+                    localResult.OutputFolder = Path.GetDirectoryName(targetPath)
+                    localResult.OutputFile = targetPath
                     Report("Disimpan: " & targetPath)
                 Catch saveEx As Exception
                     localResult.Failures.Add(Path.GetFileName(file) & ": gagal menyimpan — " & saveEx.Message)

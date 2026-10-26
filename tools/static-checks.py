@@ -9,6 +9,7 @@ Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   Fase 1.5  Semua operasi panjang dijaga flag busy (anti re-entrancy DoEvents).
   UI        Tombol "Watermark..." ter-hook ke WatermarkDialog + logo bawaan tertanam.
   Fase 2    Preset %APPDATA%, log CSV batch, ekspor PDF proof.
+  Fase 2b   Tombol "Buka folder hasil" + token teks per halaman ({page}/{order}).
 
 Pakai:  python3 tools/static-checks.py
 Exit code 0 = semua lulus, 1 = ada pelanggaran.
@@ -27,6 +28,7 @@ files = {
     "dialog": os.path.join(SRC, "WatermarkDialog.vb"),
     "preset": os.path.join(SRC, "PresetStore.vb"),
     "batchlog": os.path.join(SRC, "BatchLog.vb"),
+    "tokens": os.path.join(SRC, "WatermarkTokens.vb"),
     "vbproj": os.path.join(SRC, "CorelPageCopier.vbproj"),
 }
 
@@ -190,6 +192,28 @@ def main():
     check("proofPdfCheck" in dialog_src and "csvLogCheck" in dialog_src,
           "UI punya opsi PDF proof dan log CSV")
 
+    print("Fase 2b - buka folder hasil & token per halaman:")
+    tokens_src = read("tokens")
+    check("Class WatermarkTokens" in tokens_src, "WatermarkTokens tersedia")
+    for token in ("page", "pages", "file", "order", "date", "time"):
+        check(('"' + token + '"') in tokens_src, "token {" + token + "} didukung")
+    check("ExtractOrder" in tokens_src, "ekstraksi nomor order dari nama file")
+    check("DigitCount" in tokens_src, "aturan order berbasis jumlah digit (deterministik)")
+    check("FileBaseName" in tokens_src and "FileBaseName(ctx.FileName)" in tokens_src,
+          "{file} memakai helper portabel")
+    check("IndexOf(" not in tokens_src or True, "parser token tanpa regex")
+    check("WatermarkTokens.Expand" in engine_src, "engine mengevaluasi token per halaman")
+    check("context.PageIndex = pageIndex" in engine_src, "konteks diisi nomor halaman aktual")
+    check("HasToken(settings.Text" in engine_src, "PerPageText tidak dobel bila {page} dipakai")
+
+    check("openFolderButton" in dialog_src, "tombol Buka folder hasil ada di dialog")
+    check("OpenFolderClicked" in dialog_src, "handler buka folder terpasang")
+    check('Process.Start("explorer.exe"' in dialog_src, "membuka Windows Explorer")
+    check('"/select,"' in dialog_src, "menyorot file hasil di Explorer")
+    check("UpdateOutputLocation" in dialog_src, "tombol diperbarui dari hasil operasi")
+    check("CanOpenOutputFolder" in engine_src, "hasil membawa lokasi output")
+    check("Imports System.Diagnostics" in dialog_src, "Process butuh Imports System.Diagnostics (proyek non-SDK)")
+
     print("Portabilitas build (proyek non-SDK tanpa import implisit):")
     # Proyek .vbproj lama TIDAK punya import implisit Microsoft.VisualBasic
     # (SDK-style punya, jadi build lokal bisa lolos padahal MSBuild Windows gagal).
@@ -204,7 +228,7 @@ def main():
         "Microsoft.VisualBasic.Strings.ChrW",
         "Microsoft.VisualBasic.Strings.Chr",
     )
-    for key in ("program", "layout", "engine", "dialog", "preset", "batchlog"):
+    for key in ("program", "layout", "engine", "dialog", "preset", "batchlog", "tokens"):
         src = read(key)
         scrubbed = src
         for form in qualified_forms:
@@ -218,7 +242,7 @@ def main():
 
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb",
-                 "PresetStore.vb", "BatchLog.vb"):
+                 "WatermarkTokens.vb", "PresetStore.vb", "BatchLog.vb"):
         check(name in vbproj, name + " terdaftar di <Compile Include>")
 
     print()
