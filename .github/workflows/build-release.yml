@@ -30,6 +30,15 @@ jobs:
             throw "Static checks failed."
           }
 
+      - name: Regression tests (tanpa CorelDRAW)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet run --project tests/CorelPageCopier.RegressionTests --configuration Release
+          if ($LASTEXITCODE -ne 0) {
+            throw "Regression tests failed with exit code $LASTEXITCODE"
+          }
+
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 

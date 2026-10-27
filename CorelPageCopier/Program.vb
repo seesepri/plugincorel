@@ -34,7 +34,12 @@ Public Class CopierForm
     Private Const CDR_TEXT As Integer = 6
     Private Const CDR_GROUP As Integer = 7
     Private Const CDR_UNIT_MM As Integer = 3
-    Private Const GEOMETRY_TOLERANCE_MM As Double = 0.5
+    ''' <summary>Toleransi geometri terdokumentasi (lihat CopyVerification.ToleranceMm).</summary>
+    Private Const GEOMETRY_TOLERANCE_MM As Double = CopyVerification.ToleranceMm
+
+    ' Temuan F: identitas dokumen yang terakhir dimuat. Dipakai untuk memastikan
+    ' dokumen target pada saat Copy adalah dokumen (dan instance) yang sama.
+    Private loadedIdentity As DocumentIdentity = Nothing
 
     ' ========================================================================
     '  FASE 1.5 (#3): STATUS SIBUK GLOBAL
@@ -428,79 +433,191 @@ End Sub
         End Try
     End Sub
 
+    ''' <summary>
+    ''' Menghubungkan ke CorelDRAW.
+    '''
+    ''' Temuan F (audit reliabilitas):
+    '''   - Instance yang sedang dipakai pengguna diutamakan (ROT / GetActiveObject).
+    '''   - Instance KEDUA tidak pernah dibuka diam-diam: pengguna harus menyetujui
+    '''     lebih dulu, dan diberi tahu jendela CorelDRAW baru sudah terbuka.
+    '''   - Objek COM yang sudah tidak valid (instance ditutup) dilepas, bukan dipakai ulang.
+    ''' </summary>
     Private Sub ConnectToCorel()
         Dim lastError As Exception = Nothing
 
-        ' Gunakan koneksi yang sudah berhasil sebelumnya jika masih valid.
+        ' (1) Pakai koneksi yang sudah berhasil sebelumnya bila masih valid.
         If corelApp IsNot Nothing Then
-            Try
-                corelDoc = corelApp.ActiveDocument
-                If corelDoc IsNot Nothing Then Return
-            Catch
-                corelApp = Nothing
-                corelDoc = Nothing
-            End Try
+            If ComObjectHealth.IsAlive(corelApp) Then
+                Try
+                    Dim existingDoc As Object = corelApp.ActiveDocument
+                    If existingDoc IsNot Nothing Then
+                        corelDoc = existingDoc
+                        Return
+                    End If
+                    lastError = New InvalidOperationException("CorelDRAW terhubung, tetapi belum ada dokumen aktif.")
+                Catch ex As Exception
+                    lastError = ex
+                End Try
+            Else
+                lastError = New InvalidOperationException("Koneksi CorelDRAW sebelumnya sudah tidak valid (instance ditutup?).")
+            End If
+            ReleaseCorelReferences()
         End If
 
-        ' Coba ambil instance CorelDRAW yang sudah berjalan.
+        ' (2) Lampirkan ke instance CorelDRAW yang SUDAH berjalan (Running Object Table).
         For Each progId As String In New String() {"CorelDRAW.Application.24", "CorelDRAW.Application"}
             Try
-                corelApp = Marshal.GetActiveObject(progId)
-                If corelApp IsNot Nothing Then
-                    corelDoc = corelApp.ActiveDocument
-                    If corelDoc IsNot Nothing Then Return
-                    lastError = New InvalidOperationException("CorelDRAW ditemukan, tetapi belum ada dokumen aktif.")
+                Dim running As Object = Marshal.GetActiveObject(progId)
+                If running IsNot Nothing Then
+                    Try
+                        Dim runningDoc As Object = running.ActiveDocument
+                        If runningDoc IsNot Nothing Then
+                            corelApp = running
+                            corelDoc = runningDoc
+                            Return
+                        End If
+                        lastError = New InvalidOperationException(
+                            "CorelDRAW (" & progId & ") ditemukan, tetapi tidak ada dokumen aktif. " &
+                            "Buka dokumen CDR di jendela itu, lalu klik Muat ulang.")
+                        ComObjectHealth.TryRelease(running)
+                    Catch ex As Exception
+                        lastError = ex
+                        ComObjectHealth.TryRelease(running)
+                    End Try
                 End If
             Catch ex As Exception
                 lastError = ex
-                corelApp = Nothing
-                corelDoc = Nothing
             End Try
         Next
 
-        ' Jika instance aktif tidak terdaftar di ROT, buat/ambil instance baru melalui COM.
-        ' Ini mungkin membuka instance CorelDRAW kedua. Pengguna harus membuka CDR di instance tersebut.
+        ' (3) Tidak ada instance berjalan yang bisa dipakai: MINTA IZIN sebelum
+        '     membuka instance baru (jangan diam-diam membuat instance kedua).
+        Dim detail As String = If(lastError Is Nothing, "Tidak ada objek aplikasi yang tersedia.", lastError.Message)
+        Dim prompt As String =
+            "Tidak dapat memakai jendela CorelDRAW yang sedang berjalan." &
+            Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Detail: " & detail & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Buka instance CorelDRAW BARU melalui COM sekarang?" & Microsoft.VisualBasic.Constants.vbCrLf &
+            "PENTING: dokumen yang diproses adalah dokumen yang Anda buka di jendela BARU itu, " &
+            "bukan dokumen di jendela lain."
+        If MessageBox.Show(prompt, "Koneksi CorelDRAW", MessageBoxButtons.YesNo,
+                           MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
+            Throw New InvalidOperationException(
+                "Koneksi dibatalkan oleh pengguna. Tidak ada instance CorelDRAW baru yang dibuka. " &
+                "Buka dokumen CDR di CorelDRAW lalu klik Muat ulang. Detail: " & detail, lastError)
+        End If
+
         For Each progId As String In New String() {"CorelDRAW.Application.24", "CorelDRAW.Application"}
             Try
                 Dim appType As Type = Type.GetTypeFromProgID(progId, False)
                 If appType Is Nothing Then Continue For
-                corelApp = Activator.CreateInstance(appType)
-                If corelApp IsNot Nothing Then
-                    Try
-                        corelApp.Visible = True
-                    Catch
-                    End Try
-                    Try
-                        corelDoc = corelApp.ActiveDocument
-                    Catch
-                        corelDoc = Nothing
-                    End Try
-                    If corelDoc IsNot Nothing Then Return
-                    Throw New InvalidOperationException("CorelDRAW berhasil dibuka melalui COM, tetapi belum memiliki dokumen aktif. Buka file CDR di jendela CorelDRAW yang baru terbuka, lalu klik Muat Ulang.")
+                Dim newApp As Object = Activator.CreateInstance(appType)
+                If newApp Is Nothing Then Continue For
+
+                Try
+                    newApp.Visible = True
+                Catch
+                End Try
+
+                Dim newDoc As Object = Nothing
+                Try
+                    newDoc = newApp.ActiveDocument
+                Catch
+                    newDoc = Nothing
+                End Try
+
+                If newDoc IsNot Nothing Then
+                    corelApp = newApp
+                    corelDoc = newDoc
+                    MessageBox.Show(
+                        "Instance CorelDRAW baru sudah dibuka dan dokumen aktifnya dipakai sebagai target.",
+                        "Koneksi CorelDRAW", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                    Return
                 End If
+
+                ' Instance baru terbuka tetapi belum ada dokumen: beri tahu eksplisit
+                ' (jangan biarkan pengguna mengira dokumen lamanya yang diproses).
+                MessageBox.Show(
+                    "Instance CorelDRAW BARU sudah dibuka melalui COM, tetapi belum memiliki dokumen aktif." &
+                    Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                    "Buka file CDR di jendela CorelDRAW yang baru terbuka, lalu klik Muat ulang.",
+                    "Koneksi CorelDRAW", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                ComObjectHealth.TryRelease(newApp)
+                Throw New InvalidOperationException(
+                    "CorelDRAW baru dibuka melalui COM, tetapi belum memiliki dokumen aktif.")
             Catch ex As Exception
                 lastError = ex
-                corelApp = Nothing
-                corelDoc = Nothing
             End Try
         Next
 
-        Dim detail As String = If(lastError Is Nothing, "Tidak ada objek aplikasi yang tersedia.", lastError.Message)
-        Throw New InvalidOperationException("Tidak dapat mengakses dokumen CorelDRAW. Pastikan CorelDRAW 2022 terpasang. Jika aplikasi baru terbuka melalui COM, buka dokumen CDR di jendela tersebut lalu klik Muat Ulang. Detail: " & detail, lastError)
+        Throw New InvalidOperationException(
+            "Tidak dapat mengakses dokumen CorelDRAW. Pastikan CorelDRAW 2022 terpasang dan dokumen CDR aktif. " &
+            "Detail: " & If(lastError Is Nothing, "tidak diketahui", lastError.Message), lastError)
     End Sub
+
+    ''' <summary>Lepas referensi COM lama supaya tidak dianggap sebagai target yang masih hidup.</summary>
+    Private Sub ReleaseCorelReferences()
+        If corelDoc IsNot Nothing Then ComObjectHealth.TryRelease(corelDoc)
+        If corelApp IsNot Nothing Then ComObjectHealth.TryRelease(corelApp)
+        corelDoc = Nothing
+        corelApp = Nothing
+    End Sub
+
+    ''' <summary>Identitas instance + dokumen aktif saat ini (late bound, aman gagal).</summary>
+    Private Function CurrentIdentity() As DocumentIdentity
+        Return DocumentIdentity.FromDocument(corelDoc, DocumentIdentity.InstanceTokenFor(corelApp))
+    End Function
+
+    ''' <summary>
+    ''' Pastikan target masih dokumen yang sama seperti saat daftar halaman dimuat.
+    ''' Temuan F: mencegah dokumen dari instance lain dianggap sebagai target yang sama.
+    ''' </summary>
+    Private Function EnsureSameDocument() As Boolean
+        If loadedIdentity Is Nothing Then
+            loadedIdentity = CurrentIdentity()
+            Return True
+        End If
+        Dim current As DocumentIdentity = CurrentIdentity()
+        If current.SameTarget(loadedIdentity) Then
+            ' Jumlah halaman boleh berubah (mis. halaman ditambah), cukup perbarui.
+            loadedIdentity = current
+            Return True
+        End If
+
+        MessageBox.Show(
+            "Dokumen aktif berbeda dari dokumen saat daftar halaman dimuat." &
+            Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Saat dimuat : " & loadedIdentity.Describe() & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Sekarang    : " & current.Describe() & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Operasi dibatalkan agar tidak mengubah dokumen yang salah. Klik Muat ulang untuk memakai dokumen aktif.",
+            "Dokumen target berubah", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        statusLabel.Text = "Dokumen aktif berubah — klik Muat ulang."
+        Return False
+    End Function
 
     Private Sub LoadPages()
         ConnectToCorel()
         pagesList.Items.Clear()
+        corelDoc = corelApp.ActiveDocument
+        If corelDoc Is Nothing Then
+            Throw New InvalidOperationException("Tidak ada dokumen aktif di CorelDRAW. Buka file CDR lalu klik Muat ulang.")
+        End If
+
+        ' Temuan F: simpan identitas dokumen + instance aktif. Dipakai sebelum
+        ' operasi yang mengubah dokumen dan ditampilkan ke pengguna.
+        loadedIdentity = CurrentIdentity()
+
         sourcePageIndex = CInt(corelDoc.ActivePage.Index)
-        sourceLabel.Text = "Halaman aktif: " & sourcePageIndex & " | Pilih objek sumber sebelum menjalankan Copy."
+        sourceLabel.Text = "Dokumen: " & loadedIdentity.Describe() &
+                           " | Halaman aktif: " & sourcePageIndex &
+                           " | Pilih objek sumber sebelum menjalankan Copy."
         For i As Integer = 1 To CInt(corelDoc.Pages.Count)
             Dim caption = "Halaman " & i
             If i = sourcePageIndex Then caption &= " (AKTIF)"
             Dim itemIndex = pagesList.Items.Add(New PageItem(i, caption))
             If i = sourcePageIndex Then pagesList.SetItemChecked(itemIndex, False)
         Next
-        statusLabel.Text = "Dokumen terdeteksi."
+        statusLabel.Text = "Dokumen terdeteksi: " & loadedIdentity.Describe() & "."
     End Sub
 
     Private Sub SetAllChecks(checked As Boolean)
@@ -536,8 +653,24 @@ End Sub
         End Try
     End Sub
 
+    ''' <summary>
+    ''' Menyalin objek terpilih dari halaman sumber ke halaman tujuan.
+    '''
+    ''' Audit reliabilitas — yang diperbaiki di sini:
+    '''   A. Verifikasi copy: status dipisah Verified / Partial / Failed, geometri
+    '''      sumber dibandingkan dengan OBJEK HASIL PASTE (z-order atas atau
+    '''      selection setelah paste), bukan shape terbawah pada layer.
+    '''   B. Normalisasi satuan: satuan asli wajib terbaca; bila penyetelan mm
+    '''      gagal dipakai konversi eksplisit; pemulihan di Finally dan
+    '''      kegagalannya dilaporkan.
+    '''   C. Undo grouping: kegagalan BeginCommandGroup dilaporkan dan pengguna
+    '''      diminta konfirmasi; EndCommandGroup hanya dipanggil bila group terbuka.
+    '''   F. Identitas dokumen + jumlah halaman ditampilkan sebelum mengubah dokumen.
+    ''' Objek sumber tidak pernah dihapus/diubah, dan tidak ada fallback Delete.
+    ''' </summary>
     Private Sub CopyClickedCore()
         Dim stopwatch As Stopwatch = Stopwatch.StartNew()
+
         Dim targets As New List(Of Integer)()
         For Each obj As Object In pagesList.CheckedItems
             Dim p = DirectCast(obj, PageItem)
@@ -548,175 +681,223 @@ End Sub
             Return
         End If
 
-        ' Status dokumen yang wajib dipulihkan (Temuan #1 & #3).
-        Dim inCommandGroup As Boolean = False
-        Dim previousUnit As Integer = -1
-        Dim unitStored As Boolean = False
-        Dim sourceMeasured As Boolean = False
-        Dim srcCenterX As Double = 0
-        Dim srcCenterY As Double = 0
-        Dim srcWidth As Double = 0
-        Dim srcHeight As Double = 0
+        ' Status dokumen yang wajib dipulihkan (Temuan B & C).
+        Dim unitScope As New DocumentUnitScope(CDR_UNIT_MM)
+        Dim undoGuard As New UndoGroupGuard("Salin objek ke halaman")
+        Dim summary As New CopyRunSummary()
+        Dim sourcePageToRestore As Integer = -1
+        Dim fatalError As Exception = Nothing
+        Dim identityText As String = ""
 
         Try
             ConnectToCorel()
+            If Not EnsureSameDocument() Then Return
+            identityText = loadedIdentity.Describe()
+
             Dim actualSourcePage As Integer = CInt(corelDoc.ActivePage.Index)
             If actualSourcePage <> sourcePageIndex Then
                 MessageBox.Show("Halaman aktif berubah. Klik Muat Ulang dan ulangi.", "Halaman sumber berubah", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return
             End If
+            sourcePageToRestore = actualSourcePage
+
             Dim documentPageCount As Integer = CInt(corelDoc.Pages.Count)
             Dim validatedTargets As New List(Of Integer)()
-            Dim validationFailures As New List(Of String)()
             For Each pageIndex In targets
                 If pageIndex < 1 OrElse pageIndex > documentPageCount Then
-                    validationFailures.Add("Halaman " & pageIndex & ": indeks halaman tidak valid.")
+                    summary.Warnings.Add("Halaman " & pageIndex & ": indeks halaman tidak valid — dilewati.")
                 ElseIf pageIndex = actualSourcePage Then
-                    validationFailures.Add("Halaman " & pageIndex & ": halaman sumber tidak boleh menjadi tujuan.")
+                    summary.Warnings.Add("Halaman " & pageIndex & ": halaman sumber tidak boleh menjadi tujuan — dilewati.")
                 ElseIf Not validatedTargets.Contains(pageIndex) Then
                     validatedTargets.Add(pageIndex)
                 End If
             Next
             If validatedTargets.Count = 0 Then
-                MessageBox.Show("Tidak ada halaman tujuan yang valid." & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, validationFailures.ToArray()), "Validasi tujuan", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                MessageBox.Show("Tidak ada halaman tujuan yang valid." & Microsoft.VisualBasic.Constants.vbCrLf &
+                                String.Join(Microsoft.VisualBasic.Constants.vbCrLf, summary.Warnings.ToArray()),
+                                "Validasi tujuan", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return
             End If
 
-            Dim selection As Object = corelApp.ActiveSelectionRange
+            Dim selection As Object = Nothing
+            Try
+                selection = corelApp.ActiveSelectionRange
+            Catch
+                selection = Nothing
+            End Try
             If selection Is Nothing OrElse CInt(selection.Count) = 0 Then
                 MessageBox.Show("Pilih objek pada halaman sumber terlebih dahulu.", "Tidak ada seleksi", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return
             End If
 
-            ' --- Temuan #3: normalisasi satuan dokumen -------------------------
-            ' CenterX/CenterY/SizeWidth/SizeHeight dibaca & ditulis dalam Document.Unit,
-            ' yang bisa inch, pixel, atau point tergantung dokumen. Satuan dikunci ke mm
-            ' selama operasi agar perbandingan geometri sumber vs hasil paste konsisten,
-            ' lalu nilai aslinya dipulihkan di Finally.
+            ' --- Temuan B: baca satuan asli SEBELUM menyentuh dokumen ----------
             Try
-                previousUnit = CInt(corelDoc.Unit)
-                unitStored = True
-            Catch
+                unitScope.MarkOriginalKnown(CInt(corelDoc.Unit))
+            Catch ex As Exception
+                unitScope.MarkOriginalUnknown(ex.Message)
             End Try
-            Try
-                corelDoc.Unit = CDR_UNIT_MM
-            Catch
-            End Try
+            If Not unitScope.OriginalUnitKnown Then
+                MessageBox.Show(unitScope.BlockingReason, "Satuan dokumen tidak terbaca",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+                statusLabel.Text = "Copy dibatalkan: satuan dokumen tidak terbaca."
+                Return
+            End If
 
-            ' Ukur objek sumber (gabungan ShapeRange) sebagai acuan verifikasi.
-            Try
-                srcCenterX = CDbl(selection.CenterX)
-                srcCenterY = CDbl(selection.CenterY)
-                srcWidth = CDbl(selection.SizeWidth)
-                srcHeight = CDbl(selection.SizeHeight)
-                sourceMeasured = True
-            Catch
-                sourceMeasured = False
-            End Try
+            ' --- Temuan F: identitas dokumen + halaman ditampilkan dulu --------
+            Dim confirmText As String =
+                "Dokumen     : " & identityText & Microsoft.VisualBasic.Constants.vbCrLf &
+                "Halaman asal: " & actualSourcePage & Microsoft.VisualBasic.Constants.vbCrLf &
+                "Halaman tuju: " & String.Join(", ", validatedTargets.ToArray()) & Microsoft.VisualBasic.Constants.vbCrLf &
+                "Satuan      : " & DocumentUnits.UnitName(unitScope.OriginalUnit) &
+                " (dinormalkan ke mm, lalu dipulihkan)" & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                "Salin objek terpilih ke " & validatedTargets.Count & " halaman? Objek sumber tidak diubah/dihapus."
+            If MessageBox.Show(confirmText, "Konfirmasi salin objek", MessageBoxButtons.YesNo,
+                               MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
+                statusLabel.Text = "Copy dibatalkan oleh pengguna."
+                Return
+            End If
 
-            ' Copy berjalan langsung tanpa dialog konfirmasi. Objek sumber tidak pernah dihapus.
-            corelDoc.Pages(actualSourcePage).Activate()
+            ' --- Temuan B: normalisasi satuan --------------------------------
+            Try
+                corelDoc.Unit = unitScope.TargetUnit
+                unitScope.MarkChangeApplied()
+            Catch ex As Exception
+                unitScope.MarkChangeFailed(ex.Message)
+            End Try
+            If Not unitScope.CanVerifyInMillimeters Then
+                MessageBox.Show(unitScope.BlockingReason, "Satuan dokumen tidak dapat dinormalkan",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+                statusLabel.Text = "Copy dibatalkan: satuan dokumen tidak dapat dinormalkan."
+                Return
+            End If
+            Dim unitFactor As Double = unitScope.MeasurementFactorMm
+
+            ' Ukur objek SUMBER (gabungan shape range) sebagai acuan verifikasi.
+            ' Konversi ke mm dilakukan di CopyVerification.VerifyPasted.
+            Dim sourceSet As MeasuredShapeSet = CopyMeasurement.MeasureSelection(selection)
+
+            ' --- Temuan C: grup undo ----------------------------------------
+            undoGuard.MarkBeginAttempted()
+            Try
+                corelDoc.BeginCommandGroup(undoGuard.Name)
+                undoGuard.MarkBeginSucceeded()
+            Catch ex As Exception
+                undoGuard.MarkBeginFailed(ex.Message)
+            End Try
+            If undoGuard.BeginFailed Then
+                Dim question As String =
+                    "Grup undo CorelDRAW tidak dapat dibuka:" & Microsoft.VisualBasic.Constants.vbCrLf &
+                    undoGuard.BeginError & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                    "Tanpa grup undo, satu Ctrl+Z TIDAK akan membatalkan seluruh operasi " &
+                    "(harus dibatalkan per halaman)." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                    "Lanjutkan tanpa jaminan satu langkah Undo?"
+                If MessageBox.Show(question, "Grup undo gagal dibuka", MessageBoxButtons.YesNo,
+                                   MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
+                    summary.Warnings.Add(undoGuard.Describe())
+                    statusLabel.Text = "Copy dibatalkan: grup undo tidak tersedia."
+                    Return
+                End If
+                summary.Warnings.Add(undoGuard.Describe())
+            End If
+
+            ' Objek sumber TIDAK PERNAH dihapus sebagai bagian dari validasi.
             selection.Copy()
-
-            ' --- Temuan #1: seluruh paste dalam satu grup undo ------------------
-            ' Satu Ctrl+Z membatalkan semua paste ke semua halaman tujuan, bukan
-            ' satu per satu. EndCommandGroup selalu dipanggil di Finally.
-            Try
-                corelDoc.BeginCommandGroup("Salin objek ke halaman")
-                inCommandGroup = True
-            Catch
-            End Try
-
-            Dim succeeded As Integer = 0
-            Dim verifiedByCountOnly As Integer = 0
-            Dim failures As New List(Of String)(validationFailures)
 
             For targetPosition As Integer = 0 To validatedTargets.Count - 1
                 Dim pageIndex As Integer = validatedTargets(targetPosition)
-                statusLabel.Text = "Copy progres: " & (targetPosition + 1) & "/" & validatedTargets.Count & " — halaman tujuan " & pageIndex & "."
+                statusLabel.Text = "Copy progres: " & (targetPosition + 1) & "/" & validatedTargets.Count &
+                                   " — halaman tujuan " & pageIndex & "."
                 Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
                 Try
                     Dim destination As Object = corelDoc.Pages(pageIndex)
                     destination.Activate()
                     Dim layer As Object = destination.ActiveLayer
-                    Dim beforeCount As Integer = CInt(layer.Shapes.Count)
+                    Dim layerShapes As Object = layer.Shapes
+                    Dim beforeCount As Integer = CInt(layerShapes.Count)
                     layer.Paste()
-                    Dim added As Integer = CInt(layer.Shapes.Count) - beforeCount
+                    Dim afterCount As Integer = CInt(layerShapes.Count)
+                    Dim added As Integer = afterCount - beforeCount
 
-                    If added <= 0 Then
-                        failures.Add("Halaman " & pageIndex & ": Paste tidak menambah shape pada layer aktif; periksa hasil secara manual.")
-                        Continue For
-                    End If
+                    Dim pastedSelection As Object = Nothing
+                    Try
+                        pastedSelection = corelApp.ActiveSelectionRange
+                    Catch
+                        pastedSelection = Nothing
+                    End Try
 
-                    ' Verifikasi geometri (bukan hanya jumlah shape).
-                    If Not sourceMeasured Then
-                        succeeded += 1
-                        verifiedByCountOnly += 1
-                        Continue For
-                    End If
-
-                    Dim pastedCenterX As Double = 0
-                    Dim pastedCenterY As Double = 0
-                    Dim pastedWidth As Double = 0
-                    Dim pastedHeight As Double = 0
-                    If Not TryMeasureTopShapes(layer, added, pastedCenterX, pastedCenterY, pastedWidth, pastedHeight) Then
-                        succeeded += 1
-                        verifiedByCountOnly += 1
-                        Continue For
-                    End If
-
-                    Dim delta As WatermarkLayout.GeometryDelta = WatermarkLayout.CompareGeometry(
-                        srcCenterX, srcCenterY, srcWidth, srcHeight,
-                        pastedCenterX, pastedCenterY, pastedWidth, pastedHeight)
-
-                    If delta.Matches(GEOMETRY_TOLERANCE_MM) Then
-                        succeeded += 1
-                    Else
-                        failures.Add("Halaman " & pageIndex & ": objek tertempel tetapi posisi/ukuran berbeda dari sumber (" &
-                                     delta.Describe() & ") — periksa hasil secara manual.")
-                    End If
+                    ' Temuan A: ukur objek hasil paste yang BENAR (bukan shape terbawah),
+                    ' lalu verifikasi lewat satu fungsi yang juga diuji unit.
+                    Dim pastedSet As MeasuredShapeSet = CopyMeasurement.MeasurePasted(pastedSelection, layerShapes, added)
+                    Dim verification As CopyVerificationResult = CopyVerification.VerifyPasted(
+                        sourceSet, pastedSet, added, unitFactor, GEOMETRY_TOLERANCE_MM)
+                    summary.Add(pageIndex, verification.Status, verification.Reason)
                 Catch pageEx As Exception
-                    failures.Add("Halaman " & pageIndex & ": " & pageEx.Message)
+                    summary.Add(pageIndex, CopyVerifyStatus.Failed,
+                                pageEx.GetType().Name & ": " & pageEx.Message)
                 End Try
             Next
-
-            Try
-                corelDoc.Pages(actualSourcePage).Activate()
-            Catch
-                ' Jangan menutupi laporan utama bila pemulihan halaman gagal.
-            End Try
-
-            Dim report As String = "Copy selesai." & Microsoft.VisualBasic.Constants.vbCrLf &
-                "Halaman tujuan valid diproses: " & validatedTargets.Count & "." & Microsoft.VisualBasic.Constants.vbCrLf &
-                "Berhasil diverifikasi (geometri cocok): " & (succeeded - verifiedByCountOnly) & " halaman." & Microsoft.VisualBasic.Constants.vbCrLf
-            If verifiedByCountOnly > 0 Then
-                report &= "Terverifikasi lewat jumlah shape saja: " & verifiedByCountOnly & " halaman (geometri tidak dapat diukur)." & Microsoft.VisualBasic.Constants.vbCrLf
-            End If
-            report &= "Gagal/perlu diperiksa: " & failures.Count & " halaman."
-            If failures.Count > 0 Then report &= Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, failures.ToArray())
-            report &= Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                "Catatan: posisi & ukuran objek hasil paste dibandingkan dengan objek sumber dalam mm (toleransi " &
-                GEOMETRY_TOLERANCE_MM & " mm). Satuan dokumen dipulihkan otomatis. Semua paste berada dalam satu grup undo — satu Ctrl+Z membatalkan seluruh operasi."
-
-            report &= Microsoft.VisualBasic.Constants.vbCrLf & "Durasi: " & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik."
-            statusLabel.Text = "Copy selesai: " & succeeded & "/" & validatedTargets.Count & " halaman terverifikasi; " & failures.Count & " gagal/perlu diperiksa (" & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik)."
-            MessageBox.Show(report, "Hasil Corel Page Copier", MessageBoxButtons.OK, If(failures.Count = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
         Catch ex As Exception
-            ShowError("Proses copy gagal: " & ex.Message)
+            fatalError = ex
         Finally
-            If inCommandGroup Then
+            ' --- Temuan C: EndCommandGroup HANYA bila group benar-benar terbuka ---
+            If undoGuard.ShouldCallEnd Then
                 Try
                     corelDoc.EndCommandGroup()
-                Catch
+                    undoGuard.MarkEndSucceeded()
+                Catch ex As Exception
+                    undoGuard.MarkEndFailed(ex.Message)
                 End Try
             End If
-            If unitStored Then
+
+            ' --- Temuan B: pulihkan satuan asli, laporkan bila gagal ------------
+            If unitScope.RestoreRequired Then
                 Try
-                    corelDoc.Unit = previousUnit
-                Catch
+                    corelDoc.Unit = unitScope.OriginalUnit
+                    unitScope.MarkRestored()
+                Catch ex As Exception
+                    unitScope.MarkRestoreFailed(ex.Message)
+                End Try
+            End If
+
+            If sourcePageToRestore > 0 Then
+                Try
+                    corelDoc.Pages(sourcePageToRestore).Activate()
+                Catch ex As Exception
+                    summary.Warnings.Add("Halaman sumber tidak dapat diaktifkan kembali: " & ex.Message)
                 End Try
             End If
         End Try
+
+        ' ---- Laporan dibuat SETELAH Finally supaya kegagalan pemulihan ikut
+        ' ---- dilaporkan (Temuan B & C) dan tidak mungkin disembunyikan.
+        If undoGuard.HasProblem Then summary.Warnings.Add(undoGuard.Describe())
+        If unitScope.RestoreFailed Then
+            summary.Warnings.Add("PEMULIHAN SATUAN DOKUMEN GAGAL (" & unitScope.RestoreError &
+                                 "). Satuan dokumen kemungkinan tetap mm — ubah manual di CorelDRAW.")
+            MessageBox.Show("Satuan dokumen gagal dipulihkan ke " & DocumentUnits.UnitName(unitScope.OriginalUnit) &
+                            "." & Microsoft.VisualBasic.Constants.vbCrLf & unitScope.RestoreError &
+                            Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                            "Ubah satuan dokumen kembali secara manual.",
+                            "Pemulihan satuan gagal", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End If
+
+        Dim elapsed As Double = stopwatch.Elapsed.TotalSeconds
+
+        If fatalError IsNot Nothing Then
+            summary.Warnings.Add("Operasi dihentikan oleh kesalahan: " & fatalError.GetType().Name & ": " & fatalError.Message)
+        End If
+
+        statusLabel.Text = summary.Headline(elapsed)
+        If summary.TotalCount = 0 Then
+            MessageBox.Show("Copy tidak berjalan." & Microsoft.VisualBasic.Constants.vbCrLf &
+                            String.Join(Microsoft.VisualBasic.Constants.vbCrLf, summary.Warnings.ToArray()),
+                            "Copy tidak berjalan", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+
+        Dim report As String = summary.BuildReport(identityText, unitScope.Describe(), undoGuard.Describe(), elapsed)
+        MessageBox.Show(report, "Hasil Corel Page Copier", MessageBoxButtons.OK,
+                        If(summary.AllVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
     End Sub
 
     Private Sub AutoSelectClicked(sender As Object, e As EventArgs)
@@ -940,49 +1121,6 @@ End Sub
         End Try
 
         Return False
-    End Function
-
-    ''' <summary>
-    ''' Ukur kotak pembatas gabungan dari N shape teratas pada sebuah layer (hasil Paste
-    ''' selalu berada paling atas). Mengembalikan False bila pengukuran tidak mungkin.
-    ''' Semua nilai dalam satuan dokumen saat ini (mm selama operasi copy).
-    ''' </summary>
-    Private Function TryMeasureTopShapes(layer As Object, count As Integer,
-                                         ByRef centerX As Double, ByRef centerY As Double,
-                                         ByRef width As Double, ByRef height As Double) As Boolean
-        If count <= 0 Then Return False
-        Try
-            Dim shapes As Object = layer.Shapes
-            If CInt(shapes.Count) < count Then Return False
-
-            Dim minX As Double = Double.MaxValue
-            Dim maxX As Double = Double.MinValue
-            Dim minY As Double = Double.MaxValue
-            Dim maxY As Double = Double.MinValue
-            Dim measured As Integer = 0
-
-            For i As Integer = 1 To count
-                Dim sh As Object = shapes(i)
-                Dim cx As Double = CDbl(sh.CenterX)
-                Dim cy As Double = CDbl(sh.CenterY)
-                Dim w As Double = CDbl(sh.SizeWidth)
-                Dim h As Double = CDbl(sh.SizeHeight)
-                minX = Math.Min(minX, cx - w / 2.0)
-                maxX = Math.Max(maxX, cx + w / 2.0)
-                minY = Math.Min(minY, cy - h / 2.0)
-                maxY = Math.Max(maxY, cy + h / 2.0)
-                measured += 1
-            Next
-
-            If measured = 0 Then Return False
-            centerX = (minX + maxX) / 2.0
-            centerY = (minY + maxY) / 2.0
-            width = maxX - minX
-            height = maxY - minY
-            Return True
-        Catch
-            Return False
-        End Try
     End Function
 
     ''' <summary>

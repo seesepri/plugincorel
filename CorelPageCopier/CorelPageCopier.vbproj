@@ -38,6 +38,13 @@
     <Compile Include="WatermarkTokens.vb" />
     <Compile Include="PresetStore.vb" />
     <Compile Include="BatchLog.vb" />
+    <!-- Modul audit reliabilitas (logika murni, diuji unit tanpa CorelDRAW). -->
+    <Compile Include="CopyVerification.vb" />
+    <Compile Include="CopyMeasurement.vb" />
+    <Compile Include="DocumentUnits.vb" />
+    <Compile Include="UndoGroup.vb" />
+    <Compile Include="BatchFilePolicy.vb" />
+    <Compile Include="CorelConnection.vb" />
   </ItemGroup>
   <ItemGroup>
     <!-- Logo bawaan untuk fitur watermark (dua varian warna, tertanam di EXE). -->

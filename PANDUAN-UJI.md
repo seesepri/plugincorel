@@ -37,8 +37,12 @@ Waktu pengujian: **±20 menit** untuk smoke test (§2), **±60–90 menit** untu
 
 ```bat
 python tools\static-checks.py
+dotnet run --project tests\CorelPageCopier.RegressionTests
 ```
-Harus berakhir `SEMUA PEMERIKSAAN STATIS LULUS` (104 pemeriksaan). Kalau ada `FAIL`, jangan lanjut uji manual — laporkan dulu.
+1. `static-checks.py` harus berakhir `SEMUA PEMERIKSAAN STATIS LULUS` (**200 pemeriksaan**).
+2. Regression test (butuh .NET SDK 8) harus berakhir `Ringkasan: 103 lulus, 0 gagal`.
+
+Kalau ada `FAIL`, jangan lanjut uji manual — laporkan dulu.
 
 ---
 
@@ -262,3 +266,63 @@ Sertakan (agar bisa direproduksi cepat):
 | Log CSV | `BatchLog.vb` | §4.7 |
 | Token per halaman | `WatermarkTokens.vb` | §4.8 |
 | Pemeriksaan statis | `tools/static-checks.py` | §4.4–§4.8 |
+
+---
+
+## 10. Uji audit reliabilitas (BARU — status: **NOT RUN** di lingkungan audit)
+
+Bagian ini khusus memverifikasi perbaikan audit reliabilitas 2026-10-27
+(lihat `docs/AUDIT-RELIABILITY.md`). Belum pernah dijalankan pada CorelDRAW nyata.
+
+### 10.1 Persiapan data uji tambahan
+
+Buat di `D:\uji-audit\`:
+
+| # | Nama file | Isi |
+|---|---|---|
+| A1 | `satu-objek.cdr` | 3 halaman; halaman 1 berisi **1 persegi** 50×50 mm di (100,100); halaman 2 & 3 **sudah berisi** beberapa objek lain (teks + logo) di area berbeda |
+| A2 | `multi-seleksi.cdr` | 2 halaman; halaman 1 berisi 3 objek berjauhan (teks, bitmap, kurva) — untuk multi-selection |
+| A3 | `grup-bersarang.cdr` | 2 halaman; halaman 1 berisi grup berisi sub-grup + kurva + teks |
+| A4 | `bitmap-teks.cdr` | 2 halaman; halaman 1 berisi bitmap besar + teks kecil (ukuran campuran) |
+| A5 | `satuan-inch.cdr` | 2 halaman, **Rulers = inches** (Layout ▸ Document Options), objek persegi 2×2 inch |
+| A6 | `satuan-point.cdr` | 2 halaman, **Rulers = points**, objek persegi 144×144 pt |
+| B1 | folder `D:\uji-audit\batch\` | `a.cdr`, `b.cdr`, subfolder `sub\c.cdr`, **plus** `a_wm.cdr` & `b_wm.cdr` (output lama dari run sebelumnya) |
+| B2 | folder `D:\uji-audit\batch-benturan\` | `x.cdr` dan `x_wm.cdr` yang **dibuat manual** (bukan hasil aplikasi) |
+
+### 10.2 Skenario copy (Program.vb)
+
+| # | Langkah | Hasil yang diharapkan (versi baru) |
+|---|---|---|
+| 10.2.1 | A1: pilih objek halaman 1, centang halaman 2 & 3, **Salin** | Dialog konfirmasi menampilkan **nama dokumen + jumlah halaman + halaman sumber/tujuan + satuan**. Setelah OK: laporan `Verified: 2`, `Partial: 0`, `Gagal: 0`; halaman 2 & 3 dapat **Verified** meskipun sudah berisi objek lain (bug lama: halaman 2 dilaporkan gagal) |
+| 10.2.2 | A2: pilih **3 objek** dengan Shift-klik, salin ke halaman 2 | `Verified: 1`; laporan menyebut geometri & struktur cocok; jumlah objek di halaman 2 bertambah 3 |
+| 10.2.3 | A3: pilih grup bersarang, salin | `Verified: 1`; struktur grup di halaman tujuan tetap berupa **satu grup** (cek Object Manager) |
+| 10.2.4 | A4: pilih bitmap + teks (ukuran campuran), salin | `Verified: 1`; Δw/Δh kecil (< 0,5 mm) |
+| 10.2.5 | A5 (inch): copy antar halaman | `Verified`; laporan menyebut satuan inch + konversi eksplisit **atau** "dinormalkan ke mm"; satuan dokumen **kembali ke inch** setelah operasi |
+| 10.2.6 | A6 (point): copy antar halaman | Sama seperti 10.2.5, satuan akhir = points |
+| 10.2.7 | A1: setelah paste, geser objek hasil 2 mm secara manual **lalu** ulangi copy pada salinan (atau bandingkan Δ di laporan) | Δx/Δy yang dilaporkan ≈ 0; bila sengaja digeser, status harus **Failed** (bukan Verified) |
+| 10.2.8 | Tekan **Ctrl+Z sekali** setelah copy multi-halaman | Semua paste dibatalkan sekaligus; laporan menyebut nama grup undo `Salin objek ke halaman` |
+| 10.2.9 | Buka dokumen A, klik **Muat ulang**, aktifkan dokumen lain di CorelDRAW, klik **Salin** | Ditolak: "Dokumen aktif berbeda dari dokumen saat daftar halaman dimuat" (bukan menyalin ke dokumen salah) |
+| 10.2.10 | Tutup CorelDRAW, lalu klik **Salin** | Muncul pertanyaan sebelum membuka instance baru (default **No**); bila Yes → ada pemberitahuan bahwa instance baru dibuka |
+
+### 10.3 Skenario batch (WatermarkEngine.vb)
+
+| # | Langkah | Hasil yang diharapkan |
+|---|---|---|
+| 10.3.1 | B1: jalankan batch (**jangan** centang "Timpa file asli") | Hanya `a.cdr`, `b.cdr`, `sub\c.cdr` diproses. `a_wm.cdr`, `b_wm.cdr` muncul di bagian **"File dilewati"** laporan dengan alasan "output batch sebelumnya". **Tidak ada** `*_wm_wm.cdr` |
+| 10.3.2 | Jalankan batch yang sama **lagi** | Hasil identik (idempoten): `a_wm.cdr`/`b_wm.cdr` diperbarui, tetap tidak ada `_wm_wm` |
+| 10.3.3 | B2: jalankan batch | `x.cdr` → `x_wm.cdr` **ditimpa** (regenerasi, disebut di laporan). File asli `x.cdr` tidak berubah (bandingkan tanggal modifikasi) |
+| 10.3.4 | Buat `d.cdr` di B1, buka & kunci file itu di aplikasi lain (atau set read-only), jalankan batch | Baris CSV untuk `d.cdr` = `GAGAL`, ringkasan = `OK 3, SEBAGIAN 0, GAGAL 1`; **tidak** masuk hitungan sukses; pesan UI sama angkanya; detail exception ada di kolom Pesan |
+| 10.3.5 | Dokumen dengan 3 halaman, buat 1 halaman gagal (mis. kunci layer `WATERMARK` + nonaktifkan "Ganti watermark lama") | Baris CSV = `SEBAGIAN`, bukan `OK` |
+| 10.3.6 | Centang "Timpa file asli" | Konfirmasi menyebut **file asli DITIMPA**; file read-only ditolak dengan alasan; file `.cdr` di luar folder tidak pernah disentuh |
+| 10.3.7 | Periksa `watermark-log.csv` | **Satu** baris per file (bukan dua), kolom Status ∈ {OK, SEBAGIAN, GAGAL}, baris `RINGKASAN` memuat jumlah OK/SEBAGIAN/GAGAL |
+
+### 10.4 Hasil uji (isi saat dijalankan di Windows + CorelDRAW 2022)
+
+| Skenario | Status | Catatan |
+|---|---|---|
+| 10.2.1 – 10.2.10 | **NOT RUN** | CorelDRAW tidak tersedia di lingkungan audit |
+| 10.3.1 – 10.3.7 | **NOT RUN** | idem |
+| Build Release x64 (MSBuild Windows) | **NOT RUN** | idem |
+
+Tempelkan bukti (isi kotak laporan + CSV + screenshot Object Manager) ke tiket/PR, lalu ubah
+status di atas menjadi PASS/FAIL.

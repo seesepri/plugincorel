@@ -32,16 +32,47 @@ Public Class WatermarkResult
     Public PagesPassed As Integer = 0
     Public ShapesCreated As Integer = 0
     Public DocumentsTouched As Integer = 0
+    ''' <summary>Jumlah halaman target yang seharusnya diproses (Temuan D).</summary>
+    Public PagesIntended As Integer = 0
+    ''' <summary>Jumlah halaman target yang GAGAL diproses (Temuan D).</summary>
+    Public PagesFailed As Integer = 0
     Public Failures As New List(Of String)()
     Public Errors As New List(Of String)()
+    ''' <summary>
+    ''' Masalah yang tidak menggagalkan output tetapi wajib dilaporkan
+    ''' (mis. grup undo tidak dapat dibuka). Temuan C.
+    ''' </summary>
+    Public Warnings As New List(Of String)()
     Public Log As New List(Of String)()
     Public ProofPdfFiles As New List(Of String)()
     Public LogRowsWritten As Integer = 0
     Public DurationSeconds As Double = 0
+    ''' <summary>Hasil per file pada mode batch — SATU sumber status untuk CSV/ringkasan/UI.</summary>
+    Public FileOutcomes As New List(Of BatchFileOutcome)()
+    ''' <summary>File yang sengaja dilewati saat pengumpulan sumber batch (Temuan E).</summary>
+    Public SkippedFiles As New List(Of SkippedBatchFile)()
     ''' <summary>Folder hasil terakhir (untuk tombol "Buka folder hasil").</summary>
     Public OutputFolder As String = ""
     ''' <summary>File hasil terakhir (dipakai untuk explorer /select).</summary>
     Public OutputFile As String = ""
+
+    Public ReadOnly Property FilesOk As Integer
+        Get
+            Return BatchStatusRules.CountStatus(FileOutcomes, BatchFileStatus.Ok)
+        End Get
+    End Property
+
+    Public ReadOnly Property FilesPartial As Integer
+        Get
+            Return BatchStatusRules.CountStatus(FileOutcomes, BatchFileStatus.PartialSuccess)
+        End Get
+    End Property
+
+    Public ReadOnly Property FilesFailed As Integer
+        Get
+            Return BatchStatusRules.CountStatus(FileOutcomes, BatchFileStatus.Failed)
+        End Get
+    End Property
 
     Public ReadOnly Property CanOpenOutputFolder As Boolean
         Get
@@ -56,7 +87,7 @@ Public Class WatermarkResult
 
     Public ReadOnly Property Ok As Boolean
         Get
-            Return Errors.Count = 0 AndAlso Failures.Count = 0
+            Return Errors.Count = 0 AndAlso Failures.Count = 0 AndAlso FilesFailed = 0
         End Get
     End Property
 
@@ -65,10 +96,15 @@ Public Class WatermarkResult
         PagesPassed += other.PagesPassed
         ShapesCreated += other.ShapesCreated
         DocumentsTouched += other.DocumentsTouched
+        PagesIntended += other.PagesIntended
+        PagesFailed += other.PagesFailed
         Failures.AddRange(other.Failures)
         Errors.AddRange(other.Errors)
+        Warnings.AddRange(other.Warnings)
         Log.AddRange(other.Log)
         ProofPdfFiles.AddRange(other.ProofPdfFiles)
+        FileOutcomes.AddRange(other.FileOutcomes)
+        SkippedFiles.AddRange(other.SkippedFiles)
         LogRowsWritten += other.LogRowsWritten
         If String.IsNullOrEmpty(OutputFolder) AndAlso Not String.IsNullOrEmpty(other.OutputFolder) Then
             OutputFolder = other.OutputFolder
@@ -87,9 +123,11 @@ Public Class WatermarkResult
             Next
             sb.AppendLine()
         End If
-        sb.AppendLine("Halaman diproses : " & PagesPassed)
+        sb.AppendLine("Halaman diproses : " & PagesPassed &
+                      If(PagesIntended > 0, " / " & PagesIntended & " target", ""))
+        If PagesFailed > 0 Then sb.AppendLine("Halaman gagal    : " & PagesFailed)
         sb.AppendLine("Shape dibuat     : " & ShapesCreated)
-        If DocumentsTouched > 0 Then sb.AppendLine("Dokumen tersentuh : " & DocumentsTouched)
+        If DocumentsTouched > 0 Then sb.AppendLine("Dokumen tersimpan: " & DocumentsTouched)
         If ProofPdfFiles.Count > 0 Then
             sb.AppendLine("PDF proof        : " & ProofPdfFiles.Count & " file")
             For Each pdf As String In ProofPdfFiles
@@ -100,11 +138,36 @@ Public Class WatermarkResult
         If OutputFolder IsNot Nothing AndAlso OutputFolder.Length > 0 Then
             sb.AppendLine("Folder hasil     : " & OutputFolder)
         End If
+
+        ' --- Hasil per file (mode batch): hanya ada satu sumber status -------
+        If FileOutcomes.Count > 0 Then
+            sb.AppendLine()
+            sb.AppendLine("Hasil per file   : " & FilesOk & " OK, " & FilesPartial & " SEBAGIAN, " & FilesFailed & " GAGAL")
+            For Each outcome As BatchFileOutcome In FileOutcomes
+                sb.AppendLine("  " & outcome.ToReportLine())
+            Next
+        End If
+
+        If SkippedFiles.Count > 0 Then
+            sb.AppendLine()
+            sb.AppendLine("File dilewati    : " & SkippedFiles.Count)
+            For Each skipped As SkippedBatchFile In SkippedFiles
+                sb.AppendLine("  - " & Path.GetFileName(skipped.Path) & ": " & skipped.Reason)
+            Next
+        End If
+
         sb.AppendLine("Kegagalan        : " & Failures.Count)
         If Failures.Count > 0 Then
             sb.AppendLine()
             For Each f In Failures
                 sb.AppendLine("  • " & f)
+            Next
+        End If
+        If Warnings.Count > 0 Then
+            sb.AppendLine()
+            sb.AppendLine("Peringatan:")
+            For Each w In Warnings
+                sb.AppendLine("  • " & w)
             Next
         End If
         If Log.Count > 0 Then
@@ -144,10 +207,26 @@ Public Class WatermarkEngine
     ''' <summary>
     ''' Terapkan watermark ke dokumen aktif CorelDRAW.
     ''' doc = objek Document (late bound). Tidak menutup/menyimpan dokumen.
+    '''
+    ''' Audit reliabilitas:
+    '''   B. Satuan: Document.Unit dibaca dulu. Bila tidak terbaca, atau tidak bisa
+    '''      diubah ke mm, operasi DIBATALKAN sebelum dokumen diubah (perhitungan
+    '''      tata letak memakai mm, jadi asumsi mm tanpa normalisasi = posisi salah).
+    '''      Pemulihan satuan dilakukan di Finally dan kegagalannya dilaporkan.
+    '''   C. Undo: kegagalan BeginCommandGroup/EndCommandGroup dicatat ke
+    '''      Warnings/Errors, tidak lagi ditelan diam-diam.
+    '''   D. PagesIntended/PagesFailed diisi supaya batch bisa menilai status.
     ''' </summary>
-    Public Function ApplyToDocument(doc As Object, settings As WatermarkSettings) As WatermarkResult
+    Public Function ApplyToDocument(doc As Object, settings As WatermarkSettings,
+                                    Optional writeLogRow As Boolean = True) As WatermarkResult
         Dim localResult As New WatermarkResult()
         Dim documentTimer As Stopwatch = Stopwatch.StartNew()
+
+        If settings Is Nothing Then
+            localResult.Errors.Add("Pengaturan watermark tidak tersedia.")
+            _result.Merge(localResult)
+            Return localResult
+        End If
 
         Dim validation As List(Of String) = settings.Validate()
         If validation.Count > 0 Then
@@ -162,25 +241,43 @@ Public Class WatermarkEngine
             Return localResult
         End If
 
-        Dim oldUnit As Integer = -1
-        Dim hasOldUnit As Boolean = False
+        Dim unitScope As New DocumentUnitScope(WatermarkCdrConst.CdrMillimeter)
+        Dim undoGuard As New UndoGroupGuard("Watermark - Corel Page Copier")
         Dim oldPageIndex As Integer = -1
-        Dim inCommandGroup As Boolean = False
 
         Try
-            ' --- Simpan status dokumen supaya bisa dipulihkan -----------------
-            Try
-                oldUnit = CInt(doc.Unit)
-                hasOldUnit = True
-            Catch
-            End Try
+            ' --- Halaman aktif (dipulihkan di Finally) -------------------------
             Try
                 oldPageIndex = CInt(doc.ActivePage.Index)
-            Catch
+            Catch ex As Exception
+                localResult.Warnings.Add("Halaman aktif tidak dapat dibaca: " & ex.Message)
             End Try
 
-            ' Semua perhitungan watermark memakai milimeter.
-            doc.Unit = WatermarkCdrConst.CdrMillimeter
+            ' --- Temuan B: satuan dokumen ------------------------------------
+            Try
+                unitScope.MarkOriginalKnown(CInt(doc.Unit))
+            Catch ex As Exception
+                unitScope.MarkOriginalUnknown(ex.Message)
+            End Try
+            If Not unitScope.OriginalUnitKnown Then
+                localResult.Errors.Add(unitScope.BlockingReason)
+                Return localResult
+            End If
+
+            Try
+                doc.Unit = unitScope.TargetUnit
+                unitScope.MarkChangeApplied()
+            Catch ex As Exception
+                unitScope.MarkChangeFailed(ex.Message)
+            End Try
+            If Not unitScope.ChangeApplied Then
+                ' Tata letak watermark dihitung dalam mm; tanpa normalisasi hasil
+                ' akan salah tetapi terlihat "sukses". Batalkan sebelum menyentuh dokumen.
+                localResult.Errors.Add(
+                    "Satuan dokumen tidak dapat diubah ke mm (" & unitScope.ChangeError &
+                    "). Watermark dibatalkan agar ukuran/posisi tidak salah.")
+                Return localResult
+            End If
 
             ' --- Tentukan halaman target --------------------------------------
             Dim pages As Object = doc.Pages
@@ -199,9 +296,9 @@ Public Class WatermarkEngine
 
             If targets.Count = 0 Then
                 localResult.Errors.Add("Tidak ada halaman target yang valid pada dokumen ini.")
-                _result.Merge(localResult)
                 Return localResult
             End If
+            localResult.PagesIntended = targets.Count
 
             ' Konteks token: nama file & jumlah halaman diketahui sekali per dokumen.
             Dim tokenContext As New WatermarkTokenContext()
@@ -211,11 +308,15 @@ Public Class WatermarkEngine
 
             Report("Mulai watermark: " & settings.Describe())
 
-            ' Satu grup perintah => pengguna cukup Ctrl+Z sekali untuk membatalkan.
+            ' --- Temuan C: satu grup perintah (tidak lagi ditelan) ------------
+            undoGuard.MarkBeginAttempted()
             Try
-                doc.BeginCommandGroup("Watermark - Corel Page Copier")
-                inCommandGroup = True
-            Catch
+                doc.BeginCommandGroup(undoGuard.Name)
+                undoGuard.MarkBeginSucceeded()
+            Catch ex As Exception
+                undoGuard.MarkBeginFailed(ex.Message)
+                localResult.Warnings.Add("Grup undo tidak dapat dibuka: " & ex.Message &
+                                         ". Ctrl+Z harus diulang per halaman.")
             End Try
 
             ' --- Proses tiap halaman ------------------------------------------
@@ -228,36 +329,52 @@ Public Class WatermarkEngine
                     localResult.PagesPassed += 1
                     Report("Halaman " & pageIndex & ": " & created & " shape")
                 Catch ex As Exception
-                    localResult.Failures.Add("Halaman " & pageIndex & ": " & ex.Message)
+                    localResult.PagesFailed += 1
+                    localResult.Failures.Add("Halaman " & pageIndex & ": " & ex.GetType().Name & ": " & ex.Message)
                 End Try
             Next
 
             If localResult.PagesPassed > 0 Then localResult.DocumentsTouched = 1
 
         Catch ex As Exception
-            localResult.Errors.Add(ex.Message)
+            localResult.Errors.Add(ex.GetType().Name & ": " & ex.Message)
         Finally
-            If inCommandGroup Then
+            ' --- Temuan C: EndCommandGroup hanya bila group benar-benar terbuka ---
+            If undoGuard.ShouldCallEnd Then
                 Try
                     doc.EndCommandGroup()
-                Catch
+                    undoGuard.MarkEndSucceeded()
+                Catch ex As Exception
+                    undoGuard.MarkEndFailed(ex.Message)
+                    localResult.Errors.Add("EndCommandGroup gagal: " & ex.Message &
+                                           ". Grup undo mungkin masih terbuka — periksa daftar Undo CorelDRAW.")
                 End Try
             End If
-            If hasOldUnit Then
+
+            ' --- Temuan B: pulihkan satuan, laporkan bila gagal --------------
+            If unitScope.RestoreRequired Then
                 Try
-                    doc.Unit = oldUnit
-                Catch
+                    doc.Unit = unitScope.OriginalUnit
+                    unitScope.MarkRestored()
+                Catch ex As Exception
+                    unitScope.MarkRestoreFailed(ex.Message)
+                    localResult.Errors.Add("Pemulihan satuan dokumen ke " &
+                                           DocumentUnits.UnitName(unitScope.OriginalUnit) &
+                                           " GAGAL: " & ex.Message & ". Satuan dokumen kemungkinan tetap mm.")
                 End Try
             End If
+
             If oldPageIndex > 0 Then
                 Try
                     doc.Pages(oldPageIndex).Activate()
-                Catch
+                Catch ex As Exception
+                    localResult.Warnings.Add("Halaman " & oldPageIndex & " tidak dapat diaktifkan kembali: " & ex.Message)
                 End Try
             End If
             Try
                 doc.Application.Refresh()
             Catch
+                ' Refresh hanya kosmetik; kegagalan tidak memengaruhi hasil.
             End Try
         End Try
 
@@ -283,13 +400,18 @@ Public Class WatermarkEngine
                     localResult.OutputFile = pdfPath
                 End If
             End If
-            If settings.WriteCsvLog Then
+            If settings.WriteCsvLog AndAlso writeLogRow Then
                 Dim entry As New BatchLogEntry()
                 entry.FileName = SafeDocumentName(doc)
                 entry.Pages = localResult.PagesPassed
                 entry.Shapes = localResult.ShapesCreated
-                entry.Status = If(localResult.Ok, "OK", "SEBAGIAN")
+                ' Status CSV memakai aturan yang sama dengan batch (Temuan D).
+                entry.Status = BatchStatusRules.Label(
+                    BatchStatusRules.EvaluateApplyOnly(True, localResult.PagesIntended,
+                                                       localResult.PagesPassed, localResult.PagesFailed,
+                                                       localResult.Errors.Count > 0))
                 entry.Message = settings.Describe()
+                entry.DurationSeconds = localResult.DurationSeconds
                 If BatchLog.AppendRow(ResolveCsvPath(settings, Nothing), entry) Then
                     localResult.LogRowsWritten += 1
                 End If
@@ -445,7 +567,11 @@ Public Class WatermarkEngine
     '  OPERASI: HAPUS WATERMARK
     ' ========================================================================
 
-    ''' <summary>Hapus semua shape watermark (nama berawalan WM_) pada semua halaman.</summary>
+    ''' <summary>
+    ''' Hapus semua shape watermark (nama berawalan WM_) pada semua halaman.
+    ''' Temuan C: kegagalan grup undo dicatat, EndCommandGroup hanya dipanggil
+    ''' bila group benar-benar terbuka, dan kegagalan per halaman dihitung.
+    ''' </summary>
     Public Function RemoveFromDocument(doc As Object) As WatermarkResult
         Dim localResult As New WatermarkResult()
         If doc Is Nothing Then
@@ -454,13 +580,19 @@ Public Class WatermarkEngine
             Return localResult
         End If
 
-        Dim inCommandGroup As Boolean = False
+        Dim undoGuard As New UndoGroupGuard("Hapus Watermark - Corel Page Copier")
         Try
             Dim pageCount As Integer = CInt(doc.Pages.Count)
+            localResult.PagesIntended = pageCount
+
+            undoGuard.MarkBeginAttempted()
             Try
-                doc.BeginCommandGroup("Hapus Watermark - Corel Page Copier")
-                inCommandGroup = True
-            Catch
+                doc.BeginCommandGroup(undoGuard.Name)
+                undoGuard.MarkBeginSucceeded()
+            Catch ex As Exception
+                undoGuard.MarkBeginFailed(ex.Message)
+                localResult.Warnings.Add("Grup undo tidak dapat dibuka: " & ex.Message &
+                                         ". Penghapusan tidak dapat dibatalkan dengan satu Ctrl+Z.")
             End Try
 
             For i As Integer = 1 To pageCount
@@ -472,18 +604,23 @@ Public Class WatermarkEngine
                         Report("Halaman " & i & ": " & removed & " watermark dihapus")
                     End If
                 Catch ex As Exception
-                    localResult.Failures.Add("Halaman " & i & ": " & ex.Message)
+                    localResult.PagesFailed += 1
+                    localResult.Failures.Add("Halaman " & i & ": " & ex.GetType().Name & ": " & ex.Message)
                 End Try
             Next
 
             If localResult.PagesPassed > 0 Then localResult.DocumentsTouched = 1
         Catch ex As Exception
-            localResult.Errors.Add(ex.Message)
+            localResult.Errors.Add(ex.GetType().Name & ": " & ex.Message)
         Finally
-            If inCommandGroup Then
+            If undoGuard.ShouldCallEnd Then
                 Try
                     doc.EndCommandGroup()
-                Catch
+                    undoGuard.MarkEndSucceeded()
+                Catch ex As Exception
+                    undoGuard.MarkEndFailed(ex.Message)
+                    localResult.Errors.Add("EndCommandGroup gagal: " & ex.Message &
+                                           ". Grup undo mungkin masih terbuka — periksa daftar Undo CorelDRAW.")
                 End Try
             End If
         End Try
@@ -498,8 +635,17 @@ Public Class WatermarkEngine
 
     ''' <summary>
     ''' Terapkan watermark ke semua file .cdr dalam sebuah folder.
-    ''' saveInPlace = False (disarankan) => hasil disimpan sebagai "<nama>_wm.cdr"
+    ''' saveInPlace = False (default) => hasil disimpan sebagai "<nama>_wm.cdr"
     ''' sehingga file asli tidak pernah tertimpa.
+    '''
+    ''' Audit reliabilitas:
+    '''   D. Status per file dipisah: processing (halaman), save, dan final result.
+    '''      Status OK hanya bila watermark diterapkan ke SEMUA halaman target DAN
+    '''      output tersimpan & terverifikasi. CSV, ringkasan, dan UI memakai
+    '''      BatchFileOutcome.Status yang sama.
+    '''   E. Output batch lama (*_wm.cdr) tidak lagi dijadikan sumber, benturan
+    '''      nama diperiksa, dan mode file baru tidak pernah menimpa file sumber.
+    '''      Mode timpa divalidasi ketat per file.
     ''' </summary>
     Public Function ApplyToFolder(app As Object, folder As String, settings As WatermarkSettings,
                                   includeSubfolders As Boolean, saveInPlace As Boolean) As WatermarkResult
@@ -510,113 +656,225 @@ Public Class WatermarkEngine
             _result.Merge(localResult)
             Return localResult
         End If
-        If Not Directory.Exists(folder) Then
-            localResult.Errors.Add("Folder tidak ditemukan: " & folder)
+        If settings Is Nothing Then
+            localResult.Errors.Add("Pengaturan watermark tidak tersedia.")
+            _result.Merge(localResult)
+            Return localResult
+        End If
+        If String.IsNullOrEmpty(folder) OrElse Not Directory.Exists(folder) Then
+            localResult.Errors.Add("Folder tidak ditemukan: " & If(folder, ""))
             _result.Merge(localResult)
             Return localResult
         End If
 
-        Dim files As New List(Of String)()
+        Dim suffix As String = BatchFilePolicy.NormalizeOutputSuffix(settings.OutputSuffix)
+
+        Dim candidates As New List(Of String)()
         Try
             Dim option_ As SearchOption = If(includeSubfolders, SearchOption.AllDirectories, SearchOption.TopDirectoryOnly)
-            files.AddRange(Directory.GetFiles(folder, "*.cdr", option_))
+            candidates.AddRange(Directory.GetFiles(folder, "*" & BatchFilePolicy.SourceExtension, option_))
         Catch ex As Exception
             localResult.Errors.Add("Gagal membaca folder: " & ex.Message)
             _result.Merge(localResult)
             Return localResult
         End Try
 
-        If files.Count = 0 Then
-            localResult.Errors.Add("Tidak ada file .cdr di folder tersebut.")
+        If candidates.Count = 0 Then
+            localResult.Errors.Add("Tidak ada file " & BatchFilePolicy.SourceExtension & " di folder tersebut.")
             _result.Merge(localResult)
             Return localResult
         End If
 
-        files.Sort(StringComparer.OrdinalIgnoreCase)
-        Report("Batch: " & files.Count & " file .cdr ditemukan di " & folder)
+        ' --- Temuan E: keluarkan output batch lama dari daftar sumber --------
+        Dim selection As BatchSourceSelection = BatchFilePolicy.SelectSources(candidates, suffix)
+        localResult.SkippedFiles.AddRange(selection.Skipped)
+        For Each skipped As SkippedBatchFile In selection.Skipped
+            Report("Dilewati: " & Path.GetFileName(skipped.Path) & " — " & skipped.Reason)
+        Next
+
+        If selection.Sources.Count = 0 Then
+            localResult.Errors.Add(
+                "Tidak ada file yang bisa diproses: " & candidates.Count & " file ditemukan, " &
+                selection.Skipped.Count & " dilewati (lihat daftar file dilewati).")
+            _result.Merge(localResult)
+            Return localResult
+        End If
+
+        Report("Batch: " & selection.Sources.Count & " file " & BatchFilePolicy.SourceExtension &
+               " diproses dari " & folder &
+               If(selection.Skipped.Count > 0, " (" & selection.Skipped.Count & " dilewati)", ""))
+
         Dim batchTimer As Stopwatch = Stopwatch.StartNew()
-        Dim csvPath As String = ResolveCsvPath(settings, Path.Combine(folder, "x.cdr"))
-        Dim okFiles As Integer = 0
-        Dim failedFiles As Integer = 0
+        Dim csvPath As String = ResolveCsvPath(settings, Path.Combine(folder, "x" & BatchFilePolicy.SourceExtension))
+
+        ' Path semua sumber: dipakai agar mode "file baru" tidak menimpa sumber lain.
+        Dim sourcePaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each sourceFile As String In selection.Sources
+            Try
+                sourcePaths.Add(Path.GetFullPath(sourceFile))
+            Catch
+                sourcePaths.Add(sourceFile)
+            End Try
+        Next
+        Dim reservedOutputs As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
         Dim index As Integer = 0
-        For Each file As String In files
+        For Each sourceFile As String In selection.Sources
             index += 1
-            RaiseEvent Progress("Batch " & index & "/" & files.Count & " — " & Path.GetFileName(file) & "…")
+            RaiseEvent Progress("Batch " & index & "/" & selection.Sources.Count & " — " & Path.GetFileName(sourceFile) & "…")
 
+            Dim outcome As New BatchFileOutcome(sourceFile)
             Dim doc As Object = Nothing
-            Try
-                doc = app.OpenDocument(file)
-                If doc Is Nothing Then
-                    Throw New InvalidOperationException("Dokumen gagal dibuka (mungkin sedang dipakai atau file rusak).")
+            Dim fileTimer As Stopwatch = Stopwatch.StartNew()
+
+            ' --- Temuan E: tentukan & validasi target output ---------------
+            Dim pathError As String = ""
+            Dim targetPath As String = sourceFile
+            If saveInPlace Then
+                ' Mode timpa: validasi ketat (folder, ekstensi, read-only).
+                pathError = BatchFilePolicy.ValidateOverwriteTarget(sourceFile, folder, includeSubfolders)
+            Else
+                targetPath = BatchFilePolicy.BuildOutputPath(sourceFile, suffix)
+                pathError = BatchFilePolicy.ValidateNewOutputPath(sourceFile, targetPath)
+                If pathError = "" Then
+                    ' Benturan nama: jangan memakai path yang sama dengan sumber lain
+                    ' atau output yang sudah dipesan file sebelumnya pada batch ini.
+                    targetPath = BatchFilePolicy.ResolveUniqueOutputPath(
+                        targetPath,
+                        Function(candidate As String)
+                            Dim full As String = candidate
+                            Try
+                                full = Path.GetFullPath(candidate)
+                            Catch
+                            End Try
+                            Return sourcePaths.Contains(full) OrElse reservedOutputs.Contains(full)
+                        End Function)
+                    If BatchFilePolicy.SamePath(targetPath, sourceFile) Then
+                        pathError = "output akan menimpa file sumber; dibatalkan."
+                    End If
                 End If
-
-                Dim partResult As WatermarkResult = ApplyToDocument(doc, settings)
-                localResult.PagesPassed += partResult.PagesPassed
-                localResult.ShapesCreated += partResult.ShapesCreated
-                localResult.Failures.AddRange(partResult.Failures)
-                localResult.Errors.AddRange(partResult.Errors)
-
-                Dim targetPath As String
-                If saveInPlace Then
-                    targetPath = file
-                Else
-                    targetPath = Path.Combine(
-                        Path.GetDirectoryName(file),
-                        Path.GetFileNameWithoutExtension(file) & "_wm.cdr")
+                If pathError = "" AndAlso File.Exists(targetPath) Then
+                    outcome.Messages.Add("output sebelumnya ditimpa (regenerasi)")
                 End If
+            End If
 
+            If pathError <> "" Then
+                outcome.FatalError = pathError
+                localResult.Failures.Add(Path.GetFileName(sourceFile) & ": " & pathError)
+            Else
                 Try
-                    doc.SaveAs(targetPath)
-                    localResult.DocumentsTouched += 1
-                    localResult.OutputFolder = Path.GetDirectoryName(targetPath)
-                    localResult.OutputFile = targetPath
-                    Report("Disimpan: " & targetPath)
-                Catch saveEx As Exception
-                    localResult.Failures.Add(Path.GetFileName(file) & ": gagal menyimpan — " & saveEx.Message)
-                End Try
-
-                Dim fileOk As Boolean = partResult.Ok AndAlso partResult.PagesPassed > 0
-                If fileOk Then okFiles += 1 Else failedFiles += 1
-
-                If settings.WriteCsvLog Then
-                    Dim entry As New BatchLogEntry()
-                    entry.FileName = Path.GetFileName(file)
-                    entry.Pages = partResult.PagesPassed
-                    entry.Shapes = partResult.ShapesCreated
-                    entry.Status = If(fileOk, "OK", "GAGAL")
-                    entry.Message = If(partResult.Failures.Count = 0,
-                                       settings.Describe(),
-                                       String.Join(" / ", partResult.Failures.ToArray()))
-                    entry.DurationSeconds = partResult.DurationSeconds
-                    If BatchLog.AppendRow(csvPath, entry) Then localResult.LogRowsWritten += 1
-                End If
-
-            Catch ex As Exception
-                failedFiles += 1
-                localResult.Failures.Add(Path.GetFileName(file) & ": " & ex.Message)
-                If settings.WriteCsvLog AndAlso Not String.IsNullOrEmpty(settings.CsvLogPath) Then
-                    Dim entry As New BatchLogEntry()
-                    entry.FileName = Path.GetFileName(file)
-                    entry.Status = "GAGAL"
-                    entry.Message = ex.Message
-                    If BatchLog.AppendRow(csvPath, entry) Then localResult.LogRowsWritten += 1
-                End If
-            Finally
-                Try
-                    If doc IsNot Nothing Then doc.Close()
+                    reservedOutputs.Add(Path.GetFullPath(targetPath))
                 Catch
+                    reservedOutputs.Add(targetPath)
                 End Try
-            End Try
+                outcome.OutputPath = targetPath
+
+                Try
+                    ' --- buka dokumen ---------------------------------------
+                    doc = app.OpenDocument(sourceFile)
+                    If doc Is Nothing Then
+                        Throw New InvalidOperationException("Dokumen gagal dibuka (mungkin sedang dipakai atau file rusak).")
+                    End If
+
+                    ' --- processing -----------------------------------------
+                    outcome.ApplyAttempted = True
+                    ' writeLogRow:=False — baris CSV untuk file ini ditulis oleh batch
+                    ' di bawah, supaya tidak ada dua status berbeda untuk file yang sama.
+                    Dim partResult As WatermarkResult = ApplyToDocument(doc, settings, False)
+                    outcome.PagesIntended = partResult.PagesIntended
+                    outcome.PagesApplied = partResult.PagesPassed
+                    outcome.PagesFailed = partResult.PagesFailed
+                    outcome.ShapesCreated = partResult.ShapesCreated
+                    For Each message As String In partResult.Errors
+                        outcome.Messages.Add(message)
+                    Next
+                    For Each message As String In partResult.Failures
+                        outcome.Messages.Add(message)
+                    Next
+
+                    localResult.PagesPassed += partResult.PagesPassed
+                    localResult.PagesIntended += partResult.PagesIntended
+                    localResult.PagesFailed += partResult.PagesFailed
+                    localResult.ShapesCreated += partResult.ShapesCreated
+                    localResult.Failures.AddRange(partResult.Failures)
+                    localResult.Errors.AddRange(partResult.Errors)
+                    localResult.Warnings.AddRange(partResult.Warnings)
+                    localResult.ProofPdfFiles.AddRange(partResult.ProofPdfFiles)
+                    localResult.LogRowsWritten += partResult.LogRowsWritten
+
+                    ' --- save (hanya boleh dihitung sukses bila terverifikasi) --
+                    outcome.SaveAttempted = True
+                    Try
+                        doc.SaveAs(targetPath)
+                        If Not File.Exists(targetPath) Then
+                            Throw New InvalidOperationException("SaveAs selesai tetapi file output tidak ditemukan.")
+                        End If
+                        If New FileInfo(targetPath).Length <= 0 Then
+                            Throw New InvalidOperationException("File output tersimpan tetapi berukuran 0 byte.")
+                        End If
+                        outcome.SaveSucceeded = True
+                        localResult.DocumentsTouched += 1
+                        localResult.OutputFolder = Path.GetDirectoryName(targetPath)
+                        localResult.OutputFile = targetPath
+                        Report("Disimpan: " & targetPath)
+                    Catch saveEx As Exception
+                        outcome.Messages.Add("gagal menyimpan: " & saveEx.GetType().Name & ": " & saveEx.Message)
+                        localResult.Failures.Add(Path.GetFileName(sourceFile) & ": gagal menyimpan — " &
+                                                 saveEx.GetType().Name & ": " & saveEx.Message)
+                    End Try
+
+                Catch ex As Exception
+                    outcome.FatalError = ex.GetType().Name & ": " & ex.Message
+                    localResult.Failures.Add(Path.GetFileName(sourceFile) & ": " & outcome.FatalError)
+                Finally
+                    Try
+                        If doc IsNot Nothing Then doc.Close()
+                    Catch closeEx As Exception
+                        ' Kegagalan menutup dokumen tidak boleh disembunyikan, tetapi
+                        ' bukan alasan menyatakan output tidak valid.
+                        outcome.Messages.Add("dokumen tidak dapat ditutup: " & closeEx.Message)
+                        localResult.Warnings.Add(Path.GetFileName(sourceFile) & ": dokumen tidak dapat ditutup: " & closeEx.Message)
+                    End Try
+                End Try
+            End If
+
+            fileTimer.Stop()
+            outcome.DurationSeconds = fileTimer.Elapsed.TotalSeconds
+            localResult.FileOutcomes.Add(outcome)
+            Report("Status " & Path.GetFileName(sourceFile) & ": " & outcome.StatusLabel() & " — " & outcome.MessageText())
+
+            ' --- CSV: memakai status yang SAMA dengan ringkasan & UI ---------
+            If settings.WriteCsvLog Then
+                Dim entry As New BatchLogEntry()
+                entry.FileName = Path.GetFileName(sourceFile)
+                entry.Pages = outcome.PagesApplied
+                entry.Shapes = outcome.ShapesCreated
+                entry.Status = outcome.StatusLabel()
+                entry.Message = outcome.MessageText()
+                entry.DurationSeconds = outcome.DurationSeconds
+                If BatchLog.AppendRow(csvPath, entry) Then localResult.LogRowsWritten += 1
+            End If
         Next
 
         batchTimer.Stop()
+
+        Dim okFiles As Integer = localResult.FilesOk
+        Dim partialFiles As Integer = localResult.FilesPartial
+        Dim failedFiles As Integer = localResult.FilesFailed
+
         If settings.WriteCsvLog Then
-            If BatchLog.AppendRow(csvPath, BatchLog.SummaryEntry(settings.Describe(), files.Count, okFiles, failedFiles, batchTimer.Elapsed.TotalSeconds)) Then
+            If BatchLog.AppendRow(csvPath,
+                                  BatchLog.SummaryEntry(settings.Describe(), localResult.FileOutcomes.Count,
+                                                        okFiles, partialFiles, failedFiles,
+                                                        batchTimer.Elapsed.TotalSeconds)) Then
                 localResult.LogRowsWritten += 1
             End If
             Report("Log CSV: " & csvPath)
         End If
+
+        localResult.DurationSeconds = batchTimer.Elapsed.TotalSeconds
+        Report("Batch selesai: " & okFiles & " OK, " & partialFiles & " SEBAGIAN, " &
+               failedFiles & " GAGAL, " & localResult.SkippedFiles.Count & " dilewati.")
 
         _result.Merge(localResult)
         Return localResult
