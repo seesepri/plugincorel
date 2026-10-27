@@ -66,6 +66,12 @@ Public Class WatermarkDialog
     Private selectedColor As Color = Color.FromArgb(120, 120, 120)
     Private busy As Boolean = False
 
+    ''' <summary>Mesin yang sedang menjalankan batch (untuk tombol "Hentikan").</summary>
+    Private activeEngine As WatermarkEngine = Nothing
+
+    ''' <summary>Tombol berhenti batch; hanya aktif selama batch berjalan.</summary>
+    Private stopButton As Button = Nothing
+
     Public Sub New(app As Object, Optional preselected As List(Of Integer) = Nothing)
         corelApp = app
         If preselected IsNot Nothing Then
@@ -415,6 +421,15 @@ Public Class WatermarkDialog
         batchButton.Height = 30
         AddHandler batchButton.Click, AddressOf BatchClicked
         batchRow.Controls.Add(batchButton)
+
+        ' Fokus A: batch bisa dihentikan dengan rapi. File yang sudah selesai
+        ' tetap tersimpan; sisanya dicatat DIBATALKAN di laporan & CSV.
+        stopButton = FlatButton("Hentikan", False)
+        stopButton.Width = 110
+        stopButton.Height = 30
+        stopButton.Enabled = False
+        AddHandler stopButton.Click, AddressOf StopBatchClicked
+        batchRow.Controls.Add(stopButton)
         AddRow(grid, "", batchRow)
 
         scroll.Controls.Add(grid)
@@ -979,6 +994,8 @@ Public Class WatermarkDialog
         SetBusy(True)
         Try
             Dim engine As New WatermarkEngine()
+            activeEngine = engine
+            stopButton.Enabled = True
             AddHandler engine.Progress, Sub(message As String) UpdateStatus(message)
             Dim result As WatermarkResult = engine.ApplyToFolder(
                 corelApp, folderBox.Text.Trim(), settings, subfolderCheck.Checked, saveInPlaceCheck.Checked)
@@ -988,8 +1005,27 @@ Public Class WatermarkDialog
         Catch ex As Exception
             MessageBox.Show("Batch gagal: " & ex.Message, "Watermark", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
+            activeEngine = Nothing
+            If stopButton IsNot Nothing Then stopButton.Enabled = False
             SetBusy(False)
         End Try
+    End Sub
+
+    ''' <summary>
+    ''' Minta batch berhenti. Tidak mematikan proses secara paksa: mesin
+    ''' menyelesaikan file yang sedang diproses lalu mencatat sisanya
+    ''' sebagai DIBATALKAN, sehingga tidak ada file yang hilang dari laporan.
+    ''' </summary>
+    Private Sub StopBatchClicked(sender As Object, e As EventArgs)
+        If activeEngine Is Nothing Then
+            UpdateStatus("Tidak ada batch yang berjalan.")
+            Return
+        End If
+        activeEngine.RequestStop()
+        If stopButton IsNot Nothing Then
+            stopButton.Enabled = False
+        End If
+        UpdateStatus("Menghentikan batch setelah file yang sedang diproses selesai…")
     End Sub
 
     ' ========================================================================
@@ -1049,7 +1085,10 @@ Public Class WatermarkDialog
         If result Is Nothing Then Return "Tidak ada hasil."
         If result.FileOutcomes.Count > 0 Then
             Return "Batch selesai: " & result.FilesOk & " OK, " & result.FilesPartial & " SEBAGIAN, " &
-                   result.FilesFailed & " GAGAL, " & result.SkippedFiles.Count & " file dilewati — lihat laporan."
+                   result.FilesFailed & " GAGAL" &
+                   If(result.FilesCancelled > 0, ", " & result.FilesCancelled & " DIBATALKAN", "") &
+                   ", " & result.SkippedFiles.Count & " file dilewati" &
+                   If(result.ProofPdfInvalid, " — PDF proof ada yang TIDAK valid", "") & " — lihat laporan."
         End If
         Dim status As BatchFileStatus = BatchStatusRules.EvaluateApplyOnly(
             True, result.PagesIntended, result.PagesPassed, result.PagesFailed, result.Errors.Count > 0)
