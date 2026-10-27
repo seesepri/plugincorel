@@ -10,10 +10,9 @@ on:
       - "v*"
   # PR juga diverifikasi (static checks + regression tests + build x64) supaya
   # perubahan tidak masuk main tanpa bukti build Windows.
+  # Tanpa filter branch: PR bertumpuk (stacked) juga wajib diverifikasi,
+  # bukan hanya PR yang langsung ke main/master.
   pull_request:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 permissions:
