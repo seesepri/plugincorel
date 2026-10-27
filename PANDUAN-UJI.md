@@ -544,7 +544,7 @@ apakah posisi sesuai. Bila laporan menampilkan peringatan penempatan
 | Regression test (net8.0, tanpa CorelDRAW) | `216 lulus, 0 gagal` — termasuk 59 test baru (PDF 16, penempatan 19, log 10, batch 12) |
 | Pemeriksaan statis | `295 pemeriksaan lulus, 0 gagal` |
 | Kompilasi net48 | `Build succeeded, 0 warning, 0 error` |
-| Build Release x64 Windows | dijalankan CI `windows-latest` (lihat log PR) |
+| Build Release x64 Windows | **PASS** — CI run 40447818533 (`windows-latest`, commit `470ae08`): `bin\x64\Release\CorelPageCopier.exe`, 0 warning, 0 error; static checks 295 PASS; test 216 lulus / 0 gagal |
 
 Tempelkan isi kotak laporan + potongan CSV + screenshot PDF/Object Manager ke
 tiket/PR, lalu ubah status di tabel §12.6 menjadi PASS/FAIL. Status **hanya**

@@ -187,7 +187,7 @@ status Invalid / Unverifiable→ ProofPdfInvalid = True, status file = SEBAGIAN
 | Regression/unit test (net8.0, tanpa CorelDRAW) | **216 lulus, 0 gagal** (sebelumnya 157; **+59 test baru**) |
 | Kompilasi produksi net48 (`Option Strict Off`, semua `CorelPageCopier/*.vb`) | **Build succeeded, 0 warning, 0 error** |
 | Pemeriksaan statis (`tools/static-checks.py`) | **295 pemeriksaan lulus, 0 gagal** |
-| Build Release x64 (MSBuild Windows) | dijalankan CI `windows-latest` (lihat PR) |
+| Build Release x64 (MSBuild Windows) | **PASS** — CI run [40447818533](https://github.com/seesepri/plugincorel/actions/runs/40447818533) (commit `470ae08`): `CorelPageCopier -> bin\x64\Release\CorelPageCopier.exe`, **Build succeeded, 0 Warning, 0 Error**; static checks 295 PASS, test `216 lulus, 0 gagal` di Windows (angka identik dengan Linux) |
 | Validasi PDF pada file PDF **nyata** hasil CorelDRAW | **NOT RUN** — tidak ada CorelDRAW di lingkungan ini |
 | Pemeriksaan visual (posisi, opasitas, clipping, rotasi) | **NOT RUN** — butuh CorelDRAW + mata manusia |
 | Uji cetak / kualitas siap cetak | **NOT RUN** — di luar cakupan, tidak diklaim |
