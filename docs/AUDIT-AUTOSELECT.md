@@ -246,8 +246,12 @@ yang sama supaya angka di UI dan angka di test dapat dibandingkan langsung.
 | Kompilasi produksi .NET Framework 4.8 (net48, `Option Strict Off`) | **PASS** | `dotnet build` proyek kompilasi setara (semua `CorelPageCopier/*.vb`), 0 error / 0 warning |
 | Regression test (net8.0, 157 test) | **PASS** | `Ringkasan: 157 lulus, 0 gagal, 157 total` |
 | Pemeriksaan statis (`tools/static-checks.py`) | **PASS** | 255 pemeriksaan lulus, 0 gagal |
-| Build Windows x64 (MSBuild, `CorelPageCopier.vbproj`) | **NOT RUN di lokal** — dijalankan lewat CI GitHub Actions `windows-latest` | lihat log run di PR |
+| Build Windows x64 (MSBuild, `CorelPageCopier.vbproj`) | **PASS** | CI GitHub Actions run [40446380975](https://github.com/seesepri/plugincorel/actions/runs/40446380975) (`windows-latest`, commit `a859858`): `CorelPageCopier -> bin\x64\Release\CorelPageCopier.exe`, **Build succeeded, 0 Warning, 0 Error** |
+| Pemeriksaan statis & regression test di Windows | **PASS** | run yang sama: static checks 255 PASS / 0 FAIL, `Ringkasan: 157 lulus, 0 gagal, 157 total` |
 | Integration test CorelDRAW 2022 (dokumen nyata) | **NOT RUN** | CorelDRAW tidak tersedia di lingkungan audit; ikuti `PANDUAN-UJI.md` §11 |
+
+Catatan: angka lokal (Linux) dan Windows identik — 157 test dan 255 pemeriksaan statis
+sama-sama lulus di kedua lingkungan, sehingga perbedaan platform bukan faktor.
 
 Tidak ada status "PASS" untuk hal yang tidak dijalankan. Angka 157/255 di atas
 adalah keluaran nyata dari perintah yang tercantum di §8.

@@ -415,7 +415,8 @@ itu bukan PASS untuk skenario tersebut, catat angkanya.
 | Regression test otomatis (157 test) | **PASS** | `dotnet run --project tests/CorelPageCopier.RegressionTests -c Release` → `157 lulus, 0 gagal` |
 | Pemeriksaan statis | **PASS** | `python3 tools/static-checks.py` → 255 lulus, 0 gagal |
 | Kompilasi net48 (lingkungan audit) | **PASS** | 0 error |
-| Build Release x64 (MSBuild Windows) | **NOT RUN di lokal** | dijalankan lewat CI `windows-latest` |
+| Build Release x64 (MSBuild Windows) | **PASS** | CI run 40446380975 (`windows-latest`, commit `a859858`): `bin\x64\Release\CorelPageCopier.exe`, Build succeeded, 0 warning, 0 error |
+| Static checks + regression test di Windows | **PASS** | run yang sama: 255 PASS / 0 FAIL dan `157 lulus, 0 gagal` |
 
 Tempelkan isi kotak laporan Auto Select + screenshot Object Manager (jumlah objek
 sebelum/sesudah) ke tiket/PR, lalu ubah status di atas menjadi PASS/FAIL.
