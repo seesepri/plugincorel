@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Regression test Corel Page Copier.
+
+    Proyek ini mengompilasi ULANG file sumber logika dari CorelPageCopier
+    (bukan menyalinnya), sehingga test selalu menguji kode produksi yang sama.
+    Hanya file yang tidak bergantung pada WinForms yang disertakan; Program.vb
+    dan WatermarkDialog.vb (UI) tidak bisa diuji tanpa Windows.
+
+    Jalankan di Windows/Linux/macOS dengan .NET SDK 8, contoh:
+        dotnet run  (dari folder proyek ini)
+    Exit code 0 = semua test lulus.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace></RootNamespace>
+    <AssemblyName>CorelPageCopier.RegressionTests</AssemblyName>
+    <StartupObject>TestMain</StartupObject>
+    <OptionExplicit>On</OptionExplicit>
+    <OptionStrict>Off</OptionStrict>
+    <OptionInfer>On</OptionInfer>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);BC42024;BC42025;BC42104;BC42353;BC42354;CA1416</NoWarn>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Logika produksi yang bisa diuji tanpa CorelDRAW / WinForms -->
+    <Compile Include="..\..\CorelPageCopier\WatermarkLayout.vb" Link="Source\WatermarkLayout.vb" />
+    <Compile Include="..\..\CorelPageCopier\WatermarkTokens.vb" Link="Source\WatermarkTokens.vb" />
+    <Compile Include="..\..\CorelPageCopier\BatchLog.vb" Link="Source\BatchLog.vb" />
+    <Compile Include="..\..\CorelPageCopier\PresetStore.vb" Link="Source\PresetStore.vb" />
+    <Compile Include="..\..\CorelPageCopier\CopyVerification.vb" Link="Source\CopyVerification.vb" />
+    <Compile Include="..\..\CorelPageCopier\CopyMeasurement.vb" Link="Source\CopyMeasurement.vb" />
+    <Compile Include="..\..\CorelPageCopier\DocumentUnits.vb" Link="Source\DocumentUnits.vb" />
+    <Compile Include="..\..\CorelPageCopier\UndoGroup.vb" Link="Source\UndoGroup.vb" />
+    <Compile Include="..\..\CorelPageCopier\BatchFilePolicy.vb" Link="Source\BatchFilePolicy.vb" />
+    <Compile Include="..\..\CorelPageCopier\SaveOutputVerification.vb" Link="Source\SaveOutputVerification.vb" />
+    <Compile Include="..\..\CorelPageCopier\CorelConnection.vb" Link="Source\CorelConnection.vb" />
+    <Compile Include="..\..\CorelPageCopier\WatermarkEngine.vb" Link="Source\WatermarkEngine.vb" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Harness test + fake CorelDRAW -->
+    <Compile Include="TestRunner.vb" />
+    <Compile Include="FakeCorel.vb" />
+    <Compile Include="TestMain.vb" />
+    <Compile Include="Tests\*.vb" />
+  </ItemGroup>
+
+</Project>

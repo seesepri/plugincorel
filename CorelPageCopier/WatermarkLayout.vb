@@ -62,6 +62,11 @@ Public Class WatermarkSettings
     Public TargetPages As New List(Of Integer)()    ' dipakai bila AllPages = False
     Public ReplaceExisting As Boolean = True        ' hapus watermark lama dulu (idempoten)
     Public LayerName As String = WatermarkLayout.DefaultLayerName
+    ''' <summary>
+    ''' Akhiran nama file output batch (default "_wm"). Dipakai juga sebagai
+    ''' penanda agar output tidak diproses ulang pada eksekusi berikutnya.
+    ''' </summary>
+    Public OutputSuffix As String = BatchFilePolicy.DefaultOutputSuffix
     Public GroupWithPrefix As Boolean = True        ' grup teks+logo jadi 1 shape bergrup
     Public LockLayer As Boolean = False             ' kunci layer setelah diterapkan
 
@@ -101,6 +106,7 @@ Public Class WatermarkSettings
         copy.TargetPages = New List(Of Integer)(TargetPages)
         copy.ReplaceExisting = ReplaceExisting
         copy.LayerName = LayerName
+        copy.OutputSuffix = OutputSuffix
         copy.LockLayer = LockLayer
         copy.PerPageText = PerPageText
         copy.ExportProofPdf = ExportProofPdf

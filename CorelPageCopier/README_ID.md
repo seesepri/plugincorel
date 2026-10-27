@@ -37,7 +37,40 @@ File: `WatermarkLayout.vb` (model + matematika), `WatermarkEngine.vb` (COM),
 4. Buka CorelDRAW 2022 dan dokumen CDR yang akan digunakan.
 5. Jalankan aplikasi hasil build.
 
+## Audit reliabilitas (2026-10-27)
+
+Perbaikan bug yang berisiko menghasilkan **laporan sukses palsu** atau output tidak valid.
+Detail lengkap: `../docs/AUDIT-RELIABILITY.md`.
+
+Perubahan perilaku yang perlu diketahui:
+
+1. **Verifikasi copy dipisah**: setiap halaman tujuan berstatus **Verified** (geometri + struktur
+   cocok dalam toleransi 0,5 mm), **Partial** (paste terjadi tetapi tidak dapat diverifikasi
+   penuh), atau **Gagal**. Halaman *Partial* tidak pernah dihitung sebagai sukses.
+2. **Konfirmasi sebelum mengubah dokumen**: dialog menampilkan nama dokumen, jumlah halaman,
+   halaman sumber/tujuan, dan satuan dokumen.
+3. **Satuan dokumen**: `Document.Unit` dibaca dulu; bila tidak terbaca atau tidak bisa diubah ke
+   mm, operasi dibatalkan (tidak ada asumsi milimeter). Satuan asli selalu dipulihkan, dan
+   kegagalan pemulihan dilaporkan.
+4. **Undo**: bila grup undo gagal dibuka, aplikasi memberi tahu dan tidak lagi menjanjikan
+   "satu Ctrl+Z".
+5. **Batch**: file berakhiran `_wm` (output batch sebelumnya) **tidak** diproses ulang; status
+   per file memisahkan OK / SEBAGIAN / GAGAL, dan status OK hanya bila watermark **dan**
+   penyimpanan berhasil.
+6. **Koneksi CorelDRAW**: instance yang sedang dipakai diutamakan; instance baru hanya dibuka
+   **setelah Anda menyetujui** dialog konfirmasi.
+
 ## Pengujian
 Panduan uji langkah-demi-langkah (data uji, angka ekspektasi, troubleshooting): `../PANDUAN-UJI.md`.
 
-Kode dan struktur arsip diperiksa secara statis. Build Visual Studio dan integrasi langsung dengan CorelDRAW 2022 belum dapat diverifikasi dalam lingkungan pembuatan arsip ini. Uji copy pada dokumen salinan terlebih dahulu sebelum digunakan pada dokumen penting.
+Test otomatis tanpa CorelDRAW (butuh .NET SDK 8):
+
+```bat
+python tools\static-checks.py
+dotnet run --project tests\CorelPageCopier.RegressionTests
+```
+
+Kode dan struktur arsip diperiksa secara statis, ditambah 103 regression test otomatis yang tidak
+membutuhkan CorelDRAW. **Build Visual Studio/MSBuild di Windows dan integrasi langsung dengan
+CorelDRAW 2022 belum diverifikasi** (status NOT RUN) — lihat `../docs/AUDIT-RELIABILITY.md` §7.
+Uji copy pada dokumen salinan terlebih dahulu sebelum digunakan pada dokumen penting.

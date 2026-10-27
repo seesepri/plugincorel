@@ -164,6 +164,7 @@ Public Class PresetStore
                 AppendPair(sb, "TargetPages", JoinPages(s.TargetPages))
                 AppendPair(sb, "ReplaceExisting", If(s.ReplaceExisting, "1", "0"))
                 AppendPair(sb, "LayerName", s.LayerName)
+                AppendPair(sb, "OutputSuffix", s.OutputSuffix)
                 AppendPair(sb, "PerPageText", If(s.PerPageText, "1", "0"))
                 AppendPair(sb, "LockLayer", If(s.LockLayer, "1", "0"))
                 AppendPair(sb, "ExportProofPdf", If(s.ExportProofPdf, "1", "0"))
@@ -232,6 +233,7 @@ Public Class PresetStore
                 Next
             Case "replaceexisting" : s.ReplaceExisting = ToBool(value, s.ReplaceExisting)
             Case "layername" : s.LayerName = UnescapeValue(value)
+            Case "outputsuffix" : s.OutputSuffix = BatchFilePolicy.NormalizeOutputSuffix(UnescapeValue(value))
             Case "perpagetext" : s.PerPageText = ToBool(value, s.PerPageText)
             Case "locklayer" : s.LockLayer = ToBool(value, s.LockLayer)
             Case "exportproofpdf" : s.ExportProofPdf = ToBool(value, s.ExportProofPdf)

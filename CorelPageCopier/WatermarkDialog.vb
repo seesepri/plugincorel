@@ -860,6 +860,7 @@ Public Class WatermarkDialog
         End If
 
         Dim doc As Object = Nothing
+        Dim identityText As String = ""
         Try
             doc = GetActiveDocument()
             ' Cakupan "halaman aktif saja": isi target dari halaman yang sedang aktif.
@@ -867,10 +868,26 @@ Public Class WatermarkDialog
             If Not settings.AllPages AndAlso settings.TargetPages.Count = 0 Then
                 settings.TargetPages.Add(CInt(doc.ActivePage.Index))
             End If
+            identityText = DescribeDocument(doc)
         Catch ex As Exception
             MessageBox.Show("Tidak dapat mengakses dokumen CorelDRAW: " & ex.Message, "Watermark", MessageBoxButtons.OK, MessageBoxIcon.Error)
             Return
         End Try
+
+        ' Temuan F: identitas dokumen + jumlah halaman ditampilkan sebelum
+        ' operasi yang mengubah dokumen.
+        Dim confirmText As String =
+            "Dokumen   : " & identityText & Environment.NewLine &
+            "Cakupan   : " & If(settings.AllPages,
+                                "semua halaman",
+                                String.Join(", ", settings.TargetPages.ToArray()) & " (halaman)") & Environment.NewLine &
+            "Layer     : " & settings.LayerName & Environment.NewLine & Environment.NewLine &
+            "Terapkan watermark ke dokumen ini? (Satu Ctrl+Z membatalkan seluruh operasi bila grup undo tersedia.)"
+        If MessageBox.Show(confirmText, "Konfirmasi watermark", MessageBoxButtons.YesNo,
+                           MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
+            UpdateStatus("Watermark dibatalkan oleh pengguna.")
+            Return
+        End If
 
         SetBusy(True)
         Try
@@ -881,7 +898,7 @@ Public Class WatermarkDialog
             reportBox.Text = "Pengaturan: " & settings.Describe() & Environment.NewLine & Environment.NewLine & result.ToReport()
             reportBox.SelectionStart = 0
             reportBox.ScrollToCaret()
-            UpdateStatus(If(result.Ok, "Watermark selesai.", "Watermark selesai dengan catatan — lihat laporan."))
+            UpdateStatus(WatermarkStatusLine(result))
         Catch ex As Exception
             MessageBox.Show("Watermark gagal: " & ex.Message, "Watermark", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
@@ -891,8 +908,19 @@ Public Class WatermarkDialog
 
     Private Sub RemoveClicked(sender As Object, e As EventArgs)
         If busy Then Return
-        If MessageBox.Show("Hapus semua watermark (shape bernama WM_*) dari dokumen aktif?",
-                           "Hapus watermark", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then
+
+        Dim identityText As String = ""
+        Try
+            identityText = DescribeDocument(GetActiveDocument())
+        Catch ex As Exception
+            MessageBox.Show("Tidak dapat mengakses dokumen CorelDRAW: " & ex.Message, "Hapus watermark", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End Try
+
+        If MessageBox.Show("Hapus semua watermark (shape bernama WM_*) dari dokumen:" & Environment.NewLine &
+                           identityText & Environment.NewLine & Environment.NewLine & "Lanjutkan?",
+                           "Hapus watermark", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                           MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
             Return
         End If
 
@@ -902,7 +930,9 @@ Public Class WatermarkDialog
             Dim engine As New WatermarkEngine()
             Dim result As WatermarkResult = engine.RemoveFromDocument(doc)
             reportBox.Text = result.ToReport()
-            UpdateStatus(If(result.PagesPassed > 0, "Watermark dihapus.", "Tidak ada watermark yang ditemukan."))
+            UpdateStatus(If(result.PagesPassed > 0,
+                            "Watermark dihapus: " & result.ShapesCreated & " shape pada " & result.PagesPassed & " halaman.",
+                            "Tidak ada watermark yang ditemukan."))
         Catch ex As Exception
             MessageBox.Show("Gagal menghapus watermark: " & ex.Message, "Watermark", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
@@ -932,10 +962,17 @@ Public Class WatermarkDialog
             Return
         End If
 
-        Dim mode As String = If(saveInPlaceCheck.Checked, "file asli akan DITIMPA", "hasil disimpan sebagai nama_wm.cdr")
-        If MessageBox.Show("Jalankan watermark ke semua .cdr di:" & Environment.NewLine & folderBox.Text & Environment.NewLine & Environment.NewLine &
-                           "Mode simpan: " & mode & Environment.NewLine & Environment.NewLine & "Lanjutkan?",
-                           "Batch watermark", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
+        Dim settingsSuffix As String = BatchFilePolicy.NormalizeOutputSuffix(settings.OutputSuffix)
+        Dim mode As String = If(saveInPlaceCheck.Checked,
+                                "file asli akan DITIMPA (divalidasi ketat; file read-only ditolak)",
+                                "hasil disimpan sebagai nama" & settingsSuffix & ".cdr — file asli TIDAK ditimpa")
+        Dim confirmBatch As String =
+            "Jalankan watermark ke semua .cdr di:" & Environment.NewLine & folderBox.Text & Environment.NewLine & Environment.NewLine &
+            "Mode simpan: " & mode & Environment.NewLine &
+            "File yang sudah berakhiran " & settingsSuffix & " (output batch sebelumnya) dilewati agar tidak diproses ulang." &
+            Environment.NewLine & Environment.NewLine & "Lanjutkan?"
+        If MessageBox.Show(confirmBatch, "Batch watermark", MessageBoxButtons.YesNo,
+                           MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
             Return
         End If
 
@@ -947,7 +984,7 @@ Public Class WatermarkDialog
                 corelApp, folderBox.Text.Trim(), settings, subfolderCheck.Checked, saveInPlaceCheck.Checked)
             UpdateOutputLocation(result)
             reportBox.Text = "BATCH — " & settings.Describe() & Environment.NewLine & Environment.NewLine & result.ToReport()
-            UpdateStatus("Batch selesai: " & result.DocumentsTouched & " dokumen tersimpan, " & result.Failures.Count & " gagal.")
+            UpdateStatus(WatermarkStatusLine(result))
         Catch ex As Exception
             MessageBox.Show("Batch gagal: " & ex.Message, "Watermark", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
@@ -993,6 +1030,32 @@ Public Class WatermarkDialog
             Next
         End If
         Return s
+    End Function
+
+    ''' <summary>Identitas dokumen aktif (nama/nama file + jumlah halaman) untuk konfirmasi.</summary>
+    Private Function DescribeDocument(doc As Object) As String
+        Try
+            Return DocumentIdentity.FromDocument(doc, DocumentIdentity.InstanceTokenFor(corelApp)).Describe()
+        Catch
+            Return "(identitas dokumen tidak terbaca)"
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Satu baris status untuk hasil Apply/batch. Angka OK/SEBAGIAN/GAGAL diambil
+    ''' dari FileOutcomes sehingga sama dengan laporan dan CSV (Temuan D).
+    ''' </summary>
+    Private Function WatermarkStatusLine(result As WatermarkResult) As String
+        If result Is Nothing Then Return "Tidak ada hasil."
+        If result.FileOutcomes.Count > 0 Then
+            Return "Batch selesai: " & result.FilesOk & " OK, " & result.FilesPartial & " SEBAGIAN, " &
+                   result.FilesFailed & " GAGAL, " & result.SkippedFiles.Count & " file dilewati — lihat laporan."
+        End If
+        Dim status As BatchFileStatus = BatchStatusRules.EvaluateApplyOnly(
+            True, result.PagesIntended, result.PagesPassed, result.PagesFailed, result.Errors.Count > 0)
+        Return "Watermark " & BatchStatusRules.Label(status) & ": " & result.PagesPassed & "/" &
+               If(result.PagesIntended > 0, result.PagesIntended, result.PagesPassed) & " halaman, " &
+               result.ShapesCreated & " shape — lihat laporan."
     End Function
 
     Private Function GetActiveDocument() As Object

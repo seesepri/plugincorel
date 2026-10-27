@@ -99,13 +99,34 @@ Public Class BatchLog
     ''' <summary>Baris ringkasan untuk log batch (status = RINGKASAN).</summary>
     Public Shared Function SummaryEntry(settings As String, files As Integer, ok As Integer,
                                         failed As Integer, seconds As Double) As BatchLogEntry
+        Return SummaryEntry(settings, files, ok, 0, failed, seconds)
+    End Function
+
+    ''' <summary>
+    ''' Baris ringkasan batch dengan status partial terpisah (Temuan D), supaya
+    ''' file yang hanya berhasil sebagian tidak dihitung sebagai berhasil.
+    ''' </summary>
+    Public Shared Function SummaryEntry(settings As String, files As Integer, ok As Integer,
+                                        partialCount As Integer, failed As Integer,
+                                        seconds As Double) As BatchLogEntry
         Dim entry As New BatchLogEntry()
         entry.FileName = "(ringkasan batch)"
         entry.Pages = files
         entry.Shapes = ok
         entry.Status = "RINGKASAN"
-        entry.Message = If(settings, "") & " | berhasil " & ok & ", gagal " & failed
+        ' Satu sumber teks ringkasan: tidak ada perakitan pesan di dua tempat.
+        entry.Message = BuildSummaryMessage(settings, ok, partialCount, failed)
         entry.DurationSeconds = seconds
         Return entry
+    End Function
+
+    ''' <summary>
+    ''' Satu-satunya tempat teks ringkasan dirakit, sehingga tidak ada penulisan
+    ''' ganda ke entry.Message (review lanjutan PR #2 butir 3).
+    ''' Format: "&lt;pengaturan&gt; | OK n, SEBAGIAN n, GAGAL n".
+    ''' </summary>
+    Public Shared Function BuildSummaryMessage(settings As String, ok As Integer,
+                                               partialCount As Integer, failed As Integer) As String
+        Return If(settings, "") & " | OK " & ok & ", SEBAGIAN " & partialCount & ", GAGAL " & failed
     End Function
 End Class
