@@ -24,6 +24,8 @@ Module TestMain
         Dim runner As New TestRunner()
         CopyVerificationTests.Register(runner)
         CopyMeasurementTests.Register(runner)
+        CopyInputKindTests.Register(runner)
+        CopyInputEvidenceTests.Register(runner)
         CopyPipelineTests.Register(runner)
         DocumentUnitTests.Register(runner)
         UndoGroupTests.Register(runner)
@@ -33,6 +35,9 @@ Module TestMain
         ShapeScannerTests.Register(runner)
         SelectionNavigationTests.Register(runner)
         EngineTests.Register(runner)
+        SaveOutputVerificationTests.Register(runner)
+        SaveOutputContentTests.Register(runner)
+        BatchLogSummaryTests.Register(runner)
         ExistingFeatureTests.Register(runner)
 
         Dim exitCode As Integer = runner.RunAll()

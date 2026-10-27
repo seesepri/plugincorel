@@ -114,8 +114,19 @@ Public Class BatchLog
         entry.Pages = files
         entry.Shapes = ok
         entry.Status = "RINGKASAN"
-        entry.Message = If(settings, "") & " | OK " & ok & ", SEBAGIAN " & partialCount & ", GAGAL " & failed
+        ' Satu sumber teks ringkasan: tidak ada perakitan pesan di dua tempat.
+        entry.Message = BuildSummaryMessage(settings, ok, partialCount, failed)
         entry.DurationSeconds = seconds
         Return entry
+    End Function
+
+    ''' <summary>
+    ''' Satu-satunya tempat teks ringkasan dirakit, sehingga tidak ada penulisan
+    ''' ganda ke entry.Message (review lanjutan PR #2 butir 3).
+    ''' Format: "&lt;pengaturan&gt; | OK n, SEBAGIAN n, GAGAL n".
+    ''' </summary>
+    Public Shared Function BuildSummaryMessage(settings As String, ok As Integer,
+                                               partialCount As Integer, failed As Integer) As String
+        Return If(settings, "") & " | OK " & ok & ", SEBAGIAN " & partialCount & ", GAGAL " & failed
     End Function
 End Class

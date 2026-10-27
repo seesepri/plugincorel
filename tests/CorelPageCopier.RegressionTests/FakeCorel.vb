@@ -377,6 +377,18 @@ Public Class FakeDocument
     Public Property FailEndCommandGroup As Boolean = False
     Public Property SaveFails As Boolean = False
     Public Property SaveWritesFile As Boolean = True
+    ''' <summary>Bila True, SaveAs "berhasil" tetapi menulis file 0 byte.</summary>
+    Public Property SaveWritesEmptyFile As Boolean = False
+    ''' <summary>
+    ''' Bila True, SaveAs "berhasil" dan menulis file tidak kosong, tetapi
+    ''' isinya bukan berkas CorelDRAW (mis. filter salah / tulis terpotong).
+    ''' </summary>
+    Public Property SaveWritesInvalidContent As Boolean = False
+    ''' <summary>
+    ''' Bila True, SaveAs menulis paket ZIP (bentuk CDR CorelDRAW X4+/2022),
+    ''' bukan kontainer RIFF lama.
+    ''' </summary>
+    Public Property SaveWritesZipContainer As Boolean = False
     Public Property CloseFails As Boolean = False
 
     ' --- rekaman pemanggilan ----------------------------------------------
@@ -442,11 +454,49 @@ Public Class FakeDocument
         If SaveWritesFile Then
             Dim folder As String = Path.GetDirectoryName(targetFile)
             If Not String.IsNullOrEmpty(folder) Then Directory.CreateDirectory(folder)
-            File.WriteAllText(targetFile, "fake cdr content")
+            If SaveWritesEmptyFile Then
+                File.WriteAllBytes(targetFile, New Byte() {})
+            Else
+                ' Menulis berkas dengan bentuk yang REALISTIS: kontainer RIFF
+                ' dengan form type "CDRX" (default) atau paket ZIP (CorelDRAW
+                ' X4+). Verifikasi penyimpanan memeriksa bentuk ini, jadi file
+                ' uji harus menyerupai keluaran CorelDRAW yang sah.
+                ' Token unik: penyimpanan nyata selalu menghasilkan isi berbeda,
+                ' sehingga bukti penulisan tidak bergantung pada resolusi waktu
+                ' filesystem (lihat SaveOutputVerification).
+                File.WriteAllBytes(targetFile,
+                                   FakeCdrBytes(SaveWritesInvalidContent, SaveWritesZipContainer,
+                                                Guid.NewGuid().ToString("N")))
+            End If
         End If
         FilePath = targetFile
         Name = Path.GetFileName(targetFile)
     End Sub
+
+    ''' <summary>Byte berkas uji: RIFF/CDRX, ZIP, atau isi tidak valid.</summary>
+    Public Shared Function FakeCdrBytes(invalid As Boolean, zip As Boolean,
+                                        Optional uniqueToken As String = "") As Byte()
+        Dim token As String = If(uniqueToken, "")
+        If invalid Then
+            Return System.Text.Encoding.ASCII.GetBytes("ini bukan berkas CorelDRAW sama sekali" & token)
+        End If
+        If zip Then
+            ' "PK" 03 04 + nama entri palsu; cukup untuk klasifikasi bentuk ZIP.
+            Dim zipBytes As New List(Of Byte)()
+            zipBytes.AddRange(New Byte() {&H50, &H4B, &H3, &H4, &H14, &H0, &H0, &H0, &H0, &H0, &H0, &H0})
+            zipBytes.AddRange(System.Text.Encoding.ASCII.GetBytes("content/root.dat"))
+            zipBytes.AddRange(System.Text.Encoding.ASCII.GetBytes(token))
+            Return zipBytes.ToArray()
+        End If
+        Dim bytes As New List(Of Byte)()
+        bytes.AddRange(System.Text.Encoding.ASCII.GetBytes("RIFF"))          ' 0..3
+        bytes.AddRange(BitConverter.GetBytes(64))                            ' 4..7 ukuran
+        bytes.AddRange(System.Text.Encoding.ASCII.GetBytes("CDRX"))          ' 8..11
+        bytes.AddRange(System.Text.Encoding.ASCII.GetBytes("vrsn"))          ' 12..15
+        bytes.AddRange(BitConverter.GetBytes(2))                             ' 16..19
+        bytes.AddRange(System.Text.Encoding.ASCII.GetBytes("konten uji" & token))
+        Return bytes.ToArray()
+    End Function
 
     Public Sub Close()
         If CloseFails Then Throw New InvalidOperationException("simulasi: Close gagal")

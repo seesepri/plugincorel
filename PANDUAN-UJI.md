@@ -420,3 +420,70 @@ itu bukan PASS untuk skenario tersebut, catat angkanya.
 
 Tempelkan isi kotak laporan Auto Select + screenshot Object Manager (jumlah objek
 sebelum/sesudah) ke tiket/PR, lalu ubah status di atas menjadi PASS/FAIL.
+
+---
+
+## 14. Uji follow-up review PR #2 (BARU — status: **NOT RUN** di lingkungan audit)
+
+Perbaikan 2026-10-27 menutup dua celah kebenaran status:
+`CopyMeasurement` (jenis input & kegagalan `Count`) dan verifikasi penyimpanan
+(`SaveOutputVerification`). Yang diuji otomatis tanpa CorelDRAW sudah PASS;
+langkah di bawah ini **wajib** dijalankan di CorelDRAW 2022.
+
+### 14.1 Bukti otomatis (sudah dijalankan)
+
+| Pemeriksaan | Hasil |
+|---|---|
+| Regression test | `138 lulus, 0 gagal` pada putaran pertama; **kini 167 lulus, 0 gagal** (lihat §15.1) |
+| Pemeriksaan statis | `237 pemeriksaan`, 0 gagal pada putaran pertama; **kini 279**, 0 gagal (lihat §15.1) |
+| Kompilasi net48 | `Build succeeded, 0 warning, 0 error` |
+| Build Release x64 Windows | **PASS** — CI run 40452213172: `bin\x64\Release\CorelPageCopier.exe`, 0 warning, 0 error |
+
+### 14.2 Uji manual di CorelDRAW (status awal: NOT RUN)
+
+| No | Langkah | Hasil yang benar | Status |
+|---|---|---|---|
+| 14.2.1 | Pilih **beberapa** objek di halaman sumber (bukan satu), lalu **Salin ke halaman terpilih** | laporan menyebut jumlah objek yang benar; semua objek ikut tersalin; status per halaman **Verified/Partial** sesuai kenyataan | NOT RUN |
+| 14.2.2 | Pilih **satu** objek saja, ulangi copy | tetap seperti sebelumnya (tidak ada regresi pada Shape tunggal) | NOT RUN |
+| 14.2.3 | Pilih objek yang berada di **layer terkunci** (atau objek yang tidak bisa dipilih) | status halaman **Partial/Failed** dengan alasan, bukan Verified | NOT RUN |
+| 14.2.4 | Watermark batch, mode **file baru**, folder berisi file CDR | file `<nama>_wm.cdr` dibuat; ringkasan **OK**; pesan simpan menyebut `save OK (BARU)` | NOT RUN |
+| 14.2.5 | Watermark batch, mode **timpa**, file sumber read-only / tidak bisa ditulis | file **tidak** berubah; status **GAGAL** dengan label `TIDAK BERUBAH`/`SAVE GAGAL`; **bukan** OK | NOT RUN |
+| 14.2.6 | Setelah 14.2.5, periksa Object Manager & waktu modifikasi file | dokumen tidak berubah; tidak ada dokumen kedua yang terbuka di CorelDRAW (verifikasi tidak membuka ulang file) | NOT RUN |
+| 14.2.7 | Lihat CSV log pada 14.2.4 & 14.2.5 | kolom Status = `OK` vs `GAGAL` sesuai kenyataan; tidak ada baris OK palsu | NOT RUN |
+
+Ubah NOT RUN menjadi PASS hanya bila benar-benar diperiksa dengan mata di
+CorelDRAW 2022.
+
+---
+
+## 15. Uji follow-up review KEDUA PR #2 (BARU — status: **NOT RUN** di lingkungan audit)
+
+Putaran kedua memperketat dua hal: **bukti jenis input** pada `CopyMeasurement` dan
+**bukti penyimpanan** pada `SaveOutputVerification` (bentuk berkas + sidik jari isi).
+Laporan lengkap: `docs/REVIEW-PR2-FOLLOWUP-2.md`.
+
+### 15.1 Bukti otomatis (sudah dijalankan, tanpa CorelDRAW)
+
+| Pemeriksaan | Hasil |
+|---|---|
+| `python3 tools/static-checks.py` | **PASS** — 279 pemeriksaan, 0 gagal |
+| Regression test | **PASS** — `167 lulus, 0 gagal` (138 test lama tetap lulus) |
+| Kompilasi net48 x64 (`CompileCheck`) | **PASS** — 0 warning, 0 error |
+| Build Release x64 via MSBuild Windows | **PASS (CI `windows-latest`)** — run 40464110877, `CorelPageCopier.exe` 224.256 byte, PE32+ **x86-64** |
+| Integration CorelDRAW 2022 | **NOT RUN** |
+
+### 15.2 Uji manual di CorelDRAW 2022 (status awal: NOT RUN)
+
+| No | Langkah | Hasil yang benar | Status |
+|---|---|---|---|
+| 15.2.1 | Watermark batch, mode **file baru**, 3 file CDR 2022 asli | ketiga berkas `<nama>_wm.cdr` dibuat; semua status **OK**; label simpan `BARU`. (Membuktikan bentuk **ZIP** diterima — CorelDRAW 2022 menulis paket ZIP, bukan RIFF) | NOT RUN |
+| 15.2.2 | Pilih **satu** objek kurva saja, lalu **Salin ke halaman terpilih** | status halaman **Verified** (bukan Partial). Bila Partial muncul, catat pesan `Count`/`Shape.Type` — berarti build ini melaporkan Shape tunggal secara tak terduga | NOT RUN |
+| 15.2.3 | Pilih objek di **layer terkunci** / grup yang terkunci sebagian, ulangi copy | status **Partial/Failed** dengan alasan; tidak pernah Verified | NOT RUN |
+| 15.2.4 | Watermark batch, mode **timpa**, berkas sumber diset **read-only** | berkas **tidak berubah**; status **GAGAL** (`TIDAK BERUBAH` atau `SAVE GAGAL`); **tidak ada** peringatan kerusakan sumber (karena berkas utuh) | NOT RUN |
+| 15.2.5 | Watermark batch, mode **timpa**, hentikan CorelDRAW paksa tepat setelah menyimpan (simulasi simpan gagal) — atau pakai berkas di folder tanpa hak tulis lalu periksa berkas | bila berkas sumber menjadi kosong/hilang, ringkasan **wajib** memuat peringatan “berkas sumber kemungkinan TIDAK LENGKAP atau rusak”; status **GAGAL** | NOT RUN |
+| 15.2.6 | Buka `<nama>_wm.cdr` hasil 15.2.1 **di CorelDRAW** | terbuka normal, watermark terlihat, jumlah halaman benar (bukti tidak ada klaim validitas palsu) | NOT RUN |
+| 15.2.7 | Periksa CSV: baris file & baris ringkasan | setiap berkas muncul **satu** baris; teks ringkasan (`… OK n, SEBAGIAN n, GAGAL n`) muncul **tepat sekali** per baris ringkasan | NOT RUN |
+| 15.2.8 | Selama dan sesudah 15.2.1 & 15.2.4, lihat jendela CorelDRAW | **tidak ada** dokumen kedua yang terbuka sendiri (verifikasi tidak membuka ulang berkas) dan dokumen aktif tidak berpindah | NOT RUN |
+
+Ubah NOT RUN menjadi PASS hanya bila benar-benar diperiksa dengan mata di
+CorelDRAW 2022 dan Windows. Build Release x64 Windows juga harus PASS di CI sebelum merge.

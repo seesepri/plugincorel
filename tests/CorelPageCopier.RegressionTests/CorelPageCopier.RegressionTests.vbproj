@@ -40,6 +40,7 @@
     <Compile Include="..\..\CorelPageCopier\DocumentUnits.vb" Link="Source\DocumentUnits.vb" />
     <Compile Include="..\..\CorelPageCopier\UndoGroup.vb" Link="Source\UndoGroup.vb" />
     <Compile Include="..\..\CorelPageCopier\BatchFilePolicy.vb" Link="Source\BatchFilePolicy.vb" />
+    <Compile Include="..\..\CorelPageCopier\SaveOutputVerification.vb" Link="Source\SaveOutputVerification.vb" />
     <Compile Include="..\..\CorelPageCopier\CorelConnection.vb" Link="Source\CorelConnection.vb" />
     <Compile Include="..\..\CorelPageCopier\ShapeClassifier.vb" Link="Source\ShapeClassifier.vb" />
     <Compile Include="..\..\CorelPageCopier\ShapeNode.vb" Link="Source\ShapeNode.vb" />

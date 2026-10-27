@@ -36,6 +36,7 @@ files = {
     "units": os.path.join(SRC, "DocumentUnits.vb"),
     "undo": os.path.join(SRC, "UndoGroup.vb"),
     "batchpolicy": os.path.join(SRC, "BatchFilePolicy.vb"),
+    "saveoutput": os.path.join(SRC, "SaveOutputVerification.vb"),
     "connection": os.path.join(SRC, "CorelConnection.vb"),
     "classifier": os.path.join(SRC, "ShapeClassifier.vb"),
     "node": os.path.join(SRC, "ShapeNode.vb"),
@@ -57,11 +58,16 @@ tests_files = {
     "tests_batch": os.path.join(TESTS, "Tests", "BatchPolicyTests.vb"),
     "tests_connection": os.path.join(TESTS, "Tests", "ConnectionIdentityTests.vb"),
     "tests_engine": os.path.join(TESTS, "Tests", "EngineTests.vb"),
+    "tests_inputkind": os.path.join(TESTS, "Tests", "CopyInputKindTests.vb"),
+    "tests_saveverify": os.path.join(TESTS, "Tests", "SaveOutputVerificationTests.vb"),
     "tests_existing": os.path.join(TESTS, "Tests", "ExistingFeatureTests.vb"),
     "tests_fakeshape": os.path.join(TESTS, "FakeShapeNode.vb"),
     "tests_classifier": os.path.join(TESTS, "Tests", "AutoSelectClassifierTests.vb"),
     "tests_scanner": os.path.join(TESTS, "Tests", "ShapeScannerTests.vb"),
     "tests_nav": os.path.join(TESTS, "Tests", "SelectionNavigationTests.vb"),
+    "tests_inputevidence": os.path.join(TESTS, "Tests", "CopyInputEvidenceTests.vb"),
+    "tests_savecontent": os.path.join(TESTS, "Tests", "SaveOutputContentTests.vb"),
+    "tests_logsummary": os.path.join(TESTS, "Tests", "BatchLogSummaryTests.vb"),
 }
 
 failures = []
@@ -75,6 +81,16 @@ def read(key):
 def read_path(path):
     with open(path, encoding="utf-8") as fh:
         return fh.read()
+
+
+def code_only(source):
+    """Buang baris komentar VB ('...), supaya pemeriksaan tidak tertipu komentar."""
+    lines = []
+    for line in source.splitlines():
+        if line.strip().startswith("'"):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def check(condition, message):
@@ -409,8 +425,13 @@ def main():
     check("fileOk" not in folder_body,
           "status file tidak lagi dihitung dari partResult.Ok saja")
     check("outcome.SaveSucceeded = True" in folder_body, "save dicatat terpisah dari processing")
-    check("New FileInfo(targetPath).Length" in folder_body,
-          "penyimpanan diverifikasi (file ada & tidak kosong)")
+    # Review lanjutan PR #2: validasi inline (File.Exists + Length) diganti
+    # verifikasi terpisah yang membandingkan keadaan file SEBELUM & SESUDAH
+    # SaveAs, sehingga file lama tidak dianggap bukti penyimpanan terbaru.
+    check("SaveOutputVerification.Verify(" in folder_body,
+          "penyimpanan diverifikasi lewat SaveOutputVerification (bukan File.Exists saja)")
+    check("SaveOutputSnapshot.Capture(targetPath, True)" in folder_body,
+          "keadaan file (metadata + isi) dicatat sebelum SaveAs (file lama bukan bukti)")
     check("entry.Status = outcome.StatusLabel()" in folder_body,
           "baris CSV memakai status yang sama dengan laporan")
     check("localResult.FilesOk" in folder_body and "localResult.FilesPartial" in folder_body,
@@ -464,12 +485,14 @@ def main():
     print("Regression tests (tests/CorelPageCopier.RegressionTests):")
     for key in ("tests_proj", "tests_main", "tests_fake", "tests_copy", "tests_measure", "tests_pipeline",
                 "tests_units", "tests_undo", "tests_batch", "tests_connection",
-                "tests_engine", "tests_existing", "tests_fakeshape",
-                "tests_classifier", "tests_scanner", "tests_nav"):
+                "tests_engine", "tests_existing", "tests_inputkind", "tests_saveverify",
+                "tests_fakeshape", "tests_classifier", "tests_scanner", "tests_nav",
+                "tests_inputevidence", "tests_savecontent", "tests_logsummary"):
         check(os.path.exists(tests_files[key]), key + " ada di repo")
     tests_proj_src = read_path(tests_files["tests_proj"]) if os.path.exists(tests_files["tests_proj"]) else ""
     for source in ("CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                    "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb", "WatermarkEngine.vb",
+                   "SaveOutputVerification.vb",
                    "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb"):
         check(source in tests_proj_src, "test mengompilasi ulang " + source + " (sumber yang sama)")
     tests_copy_src = read_path(tests_files["tests_copy"]) if os.path.exists(tests_files["tests_copy"]) else ""
@@ -484,11 +507,140 @@ def main():
     check("SaveAs gagal -> status GAGAL" in tests_engine_src,
           "ada test: save gagal tidak dihitung OK")
 
+    print("Review lanjutan PR #2 — pengukuran input (Shape vs ShapeRange vs gagal):")
+    measure_src = read("measure")
+    select_body = method_body(measure_src, "MeasureSelection")
+    top_body = method_body(measure_src, "MeasureTopShapes")
+    check("Public Enum CountReadStatus" in measure_src, "status pembacaan Count dimodelkan")
+    check("MemberMissing = 1" in measure_src and "Failed = 2" in measure_src,
+          "\"tidak punya Count\" dibedakan dari \"Count gagal dibaca\"")
+    check("Public Enum MeasurementInputKind" in measure_src,
+          "jenis input (Shape tunggal/ShapeRange/koleksi) dicatat")
+    check("Function TryReadCount(" in measure_src, "TryReadCount tersedia (tidak menelan kegagalan)")
+    check("Function ClassifyInput(" in measure_src, "jenis input diklasifikasi eksplisit")
+    check("IsMemberMissing(" in measure_src,
+          "hanya exception 'member hilang' yang dianggap Shape tunggal")
+    check("TryReadCount(" in select_body and "SafeCount(rangeOrShape)" not in select_body,
+          "MeasureSelection memakai TryReadCount (bukan SafeCount -1 sebagai bukti Shape tunggal)")
+    check("jumlah objek seleksi tidak dapat diverifikasi" in select_body,
+          "jumlah tak terbaca -> hasil ditandai tidak terverifikasi (Partial)")
+    check("MarkUnreadable" in select_body,
+          "struktur ditandai tidak terbaca sehingga verifikasi tidak bisa Verified")
+    check("jumlah objek pada layer tidak dapat dibaca" in top_body,
+          "jumlah objek layer tak terbaca dilaporkan eksplisit")
+    tests_input_src = read_path(tests_files["tests_inputkind"]) if os.path.exists(tests_files["tests_inputkind"]) else ""
+    for scenario in ("Count gagal dibaca", "Shape tunggal", "ShapeRange", "koleksi COM"):
+        check(scenario in tests_input_src, "ada test pengukuran untuk: " + scenario)
+    check("PartiallyVerified" in tests_input_src,
+          "ada test: jumlah objek tak terverifikasi TIDAK boleh Verified")
+
+    print("Review lanjutan PR #2 — verifikasi penyimpanan (save dipisah dari bukti):")
+    save_src = read("saveoutput")
+    check("Public Enum SaveOutputStatus" in save_src, "status output dimodelkan")
+    check("Unchanged = 4" in save_src, "status TIDAK BERUBAH tersedia (file lama bukan bukti)")
+    check("after.LastWriteUtc <> before.LastWriteUtc" in save_src,
+          "bukti penulisan memakai perubahan ukuran/waktu modifikasi")
+    check("OverwriteInPlace" in save_src, "mode timpa dinilai eksplisit")
+    check("OpenDocument" not in save_src,
+          "verifikasi TIDAK membuka ulang dokumen (instance COM pengguna aman)")
+    engine_save_at = engine.find("SaveOutputVerification.Verify(")
+    check(engine_save_at >= 0, "engine memakai SaveOutputVerification")
+    check("outcome.SaveCallSucceeded = True" in engine and "outcome.SaveSucceeded = True" in engine,
+          "pemanggilan SaveAs dan keberhasilan penyimpanan dicatat terpisah")
+    check("SaveCallSucceeded" in policy_src, "hasil per file membawa status pemanggilan save")
+    check("SAVE TIDAK TERVERIFIKASI" in policy_src,
+          "pesan membedakan SaveAs tidak melempar dari penulisan terbukti")
+    tests_save_src = read_path(tests_files["tests_saveverify"]) if os.path.exists(tests_files["tests_saveverify"]) else ""
+    for scenario in ("SaveAs melempar", "tidak menulis", "0 byte", "mode TIMPA", "TIDAK BERUBAH",
+                     "TIDAK membuka ulang dokumen"):
+        check(scenario in tests_save_src, "ada test penyimpanan untuk: " + scenario)
+
+    print("Review lanjutan PR #2 — teks ringkasan CSV dirakit satu kali:")
+    log_src_p2 = read("batchlog")
+    check("Function BuildSummaryMessage(" in log_src_p2, "satu fungsi perakit teks ringkasan")
+    check(log_src_p2.count("entry.Message =") == 1,
+          "hanya ada satu assignment entry.Message di BatchLog.vb")
+
+    print("Review follow-up kedua PR #2 — bukti jenis input (Shape tunggal vs gagal):")
+    measure_src2 = read("measure")
+    classify_body = method_body(measure_src2, "ClassifyInput")
+    check("Function LooksLikeShape(" in measure_src2,
+          "ada bukti bentuk objek sebelum menyimpulkan 'Shape tunggal'")
+    check("LooksLikeShape(value)" in classify_body,
+          "objek tanpa Count wajib punya bukti bentuk Shape")
+    check("NotSupportedException" not in method_body(measure_src2, "IsMemberMissing"),
+          "NotSupportedException tidak lagi dianggap 'anggota hilang'")
+    check("MarkUnreadable" in method_body(measure_src2, "MeasureSlice"),
+          "pengukuran terpotong menandai struktur tidak terbaca")
+    pasted_body = method_body(measure_src2, "MeasurePasted")
+    check("SafeCount(selectionRange)" not in pasted_body,
+          "fallback selection tidak memakai SafeCount (-1 untuk semua kegagalan)")
+    check("selectionCount.IsOk" in pasted_body,
+          "fallback selection hanya bila Count benar-benar terbaca")
+    check("CInt(selection.Count)" not in code_only(copy_body),
+          "Program.vb membaca Count seleksi dengan status eksplisit (bukan CInt mentah)")
+    check("CInt(layerShapes.Count)" not in code_only(copy_body),
+          "Program.vb tidak memakai CInt mentah untuk jumlah objek layer")
+    check("TryReadCount(layerShapes)" in copy_body,
+          "jumlah objek layer dibaca lewat TryReadCount")
+    check("CopyVerifyStatus.PartiallyVerified" in copy_body,
+          "paste yang tak terverifikasi dilaporkan Partial, bukan sukses")
+    tests_evidence_src = read_path(tests_files["tests_inputevidence"]) if os.path.exists(tests_files["tests_inputevidence"]) else ""
+    for scenario in ("tanpa Count & tipe tak terbaca", "NotSupportedException",
+                     "koleksi berbohong", "Count seleksi gagal", "Count seleksi salah jumlah"):
+        check(scenario in tests_evidence_src, "ada test bukti input untuk: " + scenario)
+    check("CopyVerifyStatus.PartiallyVerified" in tests_evidence_src,
+          "test bukti input menuntut status Partial")
+    check("CopyInputEvidenceTests.Register(runner)" in read_path(tests_files["tests_main"]),
+          "suite bukti input terdaftar di TestMain")
+
+    print("Review follow-up kedua PR #2 — bukti penyimpanan (bentuk isi & sidik jari):")
+    save_src2 = read("saveoutput")
+    save_body = method_body(save_src2, "Verify")
+    check("Invalid = 6" in save_src2, "status TIDAK VALID tersedia (bentuk berkas salah)")
+    check("Function ClassifySignature(" in save_src2,
+          "bentuk berkas diklasifikasi dari byte awal (RIFF/CDR vs ZIP)")
+    check("SignatureRiffCdr" in save_src2 and "SignatureZip" in save_src2,
+          "kontainer RIFF lama DAN paket ZIP (X4+/2022) diterima")
+    check("SHA256" in save_src2 and "Fingerprint" in save_src2,
+          "isi file di-sidik-jari (bukti tidak bergantung granularitas waktu)")
+    check("changedByContent" in save_body,
+          "perbedaan isi dihitung sebagai bukti perubahan")
+    check("requireCorelSignature" in save_body,
+          "pemeriksaan bentuk hanya dilakukan bila diminta")
+    check("FileShare.ReadWrite" in save_src2,
+          "file yang masih dipegang CorelDRAW tidak langsung dianggap gagal")
+    check("OpenDocument" not in save_src2,
+          "verifikasi TIDAK membuka ulang dokumen (instance COM pengguna aman)")
+    check("HasCorelExtension" in folder_body,
+          "engine memeriksa bentuk hanya untuk berkas CorelDRAW (.cdr/.cdt/.cdx)")
+    check("TIDAK LENGKAP" in folder_body,
+          "mode timpa yang merusak sumber dilaporkan sebagai peringatan")
+    check("Function HasCorelExtension(" in policy_src, "helper ekstensi CorelDRAW tersedia")
+    tests_savecontent_src = read_path(tests_files["tests_savecontent"]) if os.path.exists(tests_files["tests_savecontent"]) else ""
+    for scenario in ("output tidak valid", "mode file baru", "mode TIMPA",
+                     "0 byte", "target lama", "sidik jari"):
+        check(scenario in tests_savecontent_src, "ada test bukti penyimpanan untuk: " + scenario)
+    check("SaveOutputContentTests.Register(runner)" in read_path(tests_files["tests_main"]),
+          "suite bukti penyimpanan terdaftar di TestMain")
+
+    print("Review follow-up kedua PR #2 — log CSV tanpa penulisan ganda:")
+    tests_log_src = read_path(tests_files["tests_logsummary"]) if os.path.exists(tests_files["tests_logsummary"]) else ""
+    check("CountOccurrences" in tests_log_src,
+          "test mengecek teks ringkasan muncul tepat sekali")
+    check("BuildSummaryMessage(" in tests_log_src,
+          "test membandingkan pesan dengan satu-satunya perakit pesan")
+    check("BatchLogSummaryTests.Register(runner)" in read_path(tests_files["tests_main"]),
+          "suite log CSV terdaftar di TestMain")
+    check(read("batchlog").count("entry.Message =") == 1,
+          "masih hanya satu assignment entry.Message setelah perubahan")
+
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb",
                  "WatermarkTokens.vb", "PresetStore.vb", "BatchLog.vb",
                  "CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                  "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb",
+                 "SaveOutputVerification.vb",
                  "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb"):
         check(name in vbproj, name + " terdaftar di <Compile Include>")
 
