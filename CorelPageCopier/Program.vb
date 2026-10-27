@@ -6,6 +6,7 @@ Imports System.Collections.Generic
 Imports System.Diagnostics
 Imports System.Drawing
 Imports System.Runtime.InteropServices
+Imports System.Text
 Imports System.Windows.Forms
 
 Module Program
@@ -27,12 +28,6 @@ Public Class CopierForm
     Private corelApp As Object
     Private corelDoc As Object
     Private sourcePageIndex As Integer = -1
-    Private matchingPageIndices As New List(Of Integer)()
-    Private currentMatchPagePosition As Integer = -1
-    Private Const CDR_CURVE As Integer = 3
-    Private Const CDR_BITMAP As Integer = 5
-    Private Const CDR_TEXT As Integer = 6
-    Private Const CDR_GROUP As Integer = 7
     Private Const CDR_UNIT_MM As Integer = 3
     ''' <summary>Toleransi geometri terdokumentasi (lihat CopyVerification.ToleranceMm).</summary>
     Private Const GEOMETRY_TOLERANCE_MM As Double = CopyVerification.ToleranceMm
@@ -963,6 +958,18 @@ End Sub
                         If(summary.AllVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
     End Sub
 
+    ' ========================================================================
+    '  AUTO SELECT
+    '  Klasifikasi objek dipisah ke ShapeClassifier (murni), penelusuran pohon
+    '  ke ShapeScanner (murni), navigasi hasil ke MatchNavigator (murni).
+    '  Bagian di bawah ini hanya menjembatani COM + UI.
+    ' ========================================================================
+
+    Private ReadOnly matchNavigator As New MatchNavigator()
+
+    ''' <summary>Hasil pemindaian terakhir per halaman (untuk laporan & navigasi).</summary>
+    Private ReadOnly lastScanByPage As New Dictionary(Of Integer, ShapeScanResult)()
+
     Private Sub AutoSelectClicked(sender As Object, e As EventArgs)
         If Not TryBeginOperation("Auto Select") Then Return
         Try
@@ -972,52 +979,240 @@ End Sub
         End Try
     End Sub
 
+    ''' <summary>
+    ''' Pilih otomatis objek berdasarkan kategori & cakupan halaman.
+    '''
+    ''' Audit Auto Select — yang diperbaiki:
+    '''   1. Kategori "vektor" tidak lagi "apa pun yang bukan teks/bitmap/grup"
+    '''      (dulu ikut memilih garis bantu/OLE); definisinya eksplisit di
+    '''      ShapeClassifier.
+    '''   2. Status kurva dibaca dari Curve.Closed; bila tidak terbaca objek TIDAK
+    '''      dianggap kurva terbuka dan kegagalannya dilaporkan.
+    '''   3. Grup bersarang: batas kedalaman + kegagalan baca anak dicatat.
+    '''   4. PowerClip: isi container dipindai lewat jalur khusus; hit di dalamnya
+    '''      memilih container (bukan objek tersembunyi yang tak bisa dipilih).
+    '''   5. Watermark tidak pernah terpilih (termasuk di dalam grup/PowerClip).
+    '''   6. Navigasi memakai snapshot kategori/cakupan saat pemindaian.
+    '''   7. Seleksi kosong: seleksi lama TIDAK dibersihkan (tidak ada operasi
+    '''      destruktif saat tidak ada hasil).
+    '''   8. Jumlah objek terpilih divalidasi ulang dari CorelDRAW.
+    ''' </summary>
     Private Sub AutoSelectClickedCore()
-        Dim stopwatch As Stopwatch = Stopwatch.StartNew()
+        Dim scanTimer As Stopwatch = Stopwatch.StartNew()
+        Dim category As ShapeCategory = ShapeClassifier.CategoryFromIndex(categoryBox.SelectedIndex)
+        Dim allPages As Boolean = (scopeBox.SelectedIndex = 1)
+
+        ' Sesi sebelumnya dibatalkan lebih dulu supaya kegagalan di tengah jalan
+        ' tidak meninggalkan daftar halaman yang setengah jadi.
+        matchNavigator.Reset()
+        lastScanByPage.Clear()
+
         Try
             ConnectToCorel()
-            Dim category As Integer = categoryBox.SelectedIndex
-            Dim allPages As Boolean = (scopeBox.SelectedIndex = 1)
+            If Not EnsureSameDocument() Then Return
+
             Dim pageCount As Integer = CInt(corelDoc.Pages.Count)
             Dim originalPage As Integer = CInt(corelDoc.ActivePage.Index)
-            matchingPageIndices.Clear()
-            currentMatchPagePosition = -1
+
             If Not allPages Then
-                Dim matches As List(Of Object) = GetMatchingShapes(corelDoc.ActivePage, category)
-                Dim selectedCount As Integer = ApplySelection(matches)
-                statusLabel.Text = "Auto Select: " & selectedCount & " objek pada halaman " & originalPage & "."
-                MessageBox.Show("Terpilih " & selectedCount & " objek pada halaman " & originalPage & ".", "Auto Select", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                ScanSinglePage(originalPage, category, scanTimer)
                 Return
             End If
 
-            Dim counts As New Dictionary(Of Integer, Integer)()
-            Dim total As Integer = 0
+            ' --- Pindai semua halaman --------------------------------
+            Dim pagesWithMatches As New List(Of Integer)()
+            Dim totalMatches As Integer = 0
+            Dim totalDiagnostics As Integer = 0
+
             For pageIndex As Integer = 1 To pageCount
-                statusLabel.Text = "Memindai progres: halaman " & pageIndex & "/" & pageCount & " | total objek cocok sementara: " & total & " | halaman aktif saat ini: " & CInt(corelDoc.ActivePage.Index) & "."
+                statusLabel.Text = "Memindai progres: halaman " & pageIndex & "/" & pageCount &
+                                   " | total objek cocok sementara: " & totalMatches & "."
                 Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
-                Dim matches As List(Of Object) = GetMatchingShapes(corelDoc.Pages(pageIndex), category)
-                counts(pageIndex) = matches.Count
-                total += matches.Count
-                If matches.Count > 0 Then matchingPageIndices.Add(pageIndex)
+
+                Dim scan As ShapeScanResult = ScanPageForUi(pageIndex, category)
+                If scan Is Nothing Then Continue For
+
+                lastScanByPage(pageIndex) = scan
+                totalMatches += scan.MatchCount
+                totalDiagnostics += scan.Diagnostics.Count
+                If scan.MatchCount > 0 Then pagesWithMatches.Add(pageIndex)
             Next
-            If matchingPageIndices.Count = 0 Then
-                MessageBox.Show("Tidak ditemukan objek yang cocok pada dokumen.", "Auto Select", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                statusLabel.Text = "Auto Select: tidak ada objek cocok."
+
+            If pagesWithMatches.Count = 0 Then
+                ' Tidak ada hasil: JANGAN menyentuh seleksi yang ada.
+                statusLabel.Text = "Auto Select: tidak ada objek cocok (" &
+                                   ShapeClassifier.CategoryLabel(category) & ")."
+                MessageBox.Show("Tidak ditemukan objek yang cocok untuk kategori """ &
+                                ShapeClassifier.CategoryLabel(category) & """ pada " &
+                                pageCount & " halaman." & Microsoft.VisualBasic.Constants.vbCrLf &
+                                ShapeClassifier.CategoryHelp(category) & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                                "Seleksi yang ada tidak diubah.",
+                                "Auto Select", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return
             End If
-            currentMatchPagePosition = 0
-            SelectMatchingPageAtCurrentPosition(category)
+
+            ' Snapshot kategori + cakupan ikut disimpan untuk navigasi.
+            matchNavigator.Start(category, allPages, pagesWithMatches)
+
+            Dim selectReport As SelectionOutcome = SelectPageAtCurrentMatch(category)
+
             Dim details As New List(Of String)()
-            For Each kvp In counts
-                details.Add("Halaman " & kvp.Key & ": " & kvp.Value & " objek")
+            For Each pageIndex As Integer In pagesWithMatches
+                Dim scan As ShapeScanResult = lastScanByPage(pageIndex)
+                details.Add("Halaman " & pageIndex.ToString() & ": " & scan.MatchCount.ToString() &
+                            " objek (" & scan.DistinctTargetCount.ToString() & " target seleksi)")
             Next
-            Dim report As String = "Pemindaian semua halaman selesai." & Microsoft.VisualBasic.Constants.vbCrLf & "Total objek cocok: " & total & Microsoft.VisualBasic.Constants.vbCrLf & "Durasi pemindaian: " & stopwatch.Elapsed.TotalSeconds.ToString("0.0") & " detik." & Microsoft.VisualBasic.Constants.vbCrLf & "Halaman yang memiliki kecocokan: " & matchingPageIndices.Count & Microsoft.VisualBasic.Constants.vbCrLf & "Seleksi saat ini: halaman " & matchingPageIndices(0) & ". Gunakan tombol 'Pilih Halaman Cocok Berikutnya' untuk berpindah." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf & String.Join(Microsoft.VisualBasic.Constants.vbCrLf, details.ToArray())
-            statusLabel.Text = "Pindai semua halaman: " & total & " objek; " & matchingPageIndices.Count & " halaman cocok."
-            MessageBox.Show(report, "Auto Select — Semua Halaman", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            For Each pageIndex As Integer In lastScanByPage.Keys
+                If Not pagesWithMatches.Contains(pageIndex) Then
+                    details.Add("Halaman " & pageIndex.ToString() & ": 0 objek")
+                End If
+            Next
+            details.Sort()
+
+            Dim report As New StringBuilder()
+            report.AppendLine("Pemindaian semua halaman selesai.")
+            report.AppendLine("Kategori       : " & ShapeClassifier.CategoryLabel(category))
+            report.AppendLine("Definisi       : " & ShapeClassifier.CategoryHelp(category))
+            report.AppendLine("Total objek    : " & totalMatches & " (" & pagesWithMatches.Count & " halaman memiliki hasil)")
+            report.AppendLine("Halaman dipindai: " & lastScanByPage.Count & " dari " & pageCount)
+            report.AppendLine("Durasi         : " & scanTimer.Elapsed.TotalSeconds.ToString("0.0") & " detik")
+            report.AppendLine()
+            report.AppendLine("Per halaman:")
+            For Each line As String In details
+                report.AppendLine("  " & line)
+            Next
+            report.AppendLine()
+            report.AppendLine(selectReport.Describe())
+            If totalDiagnostics > 0 Then
+                report.AppendLine()
+                report.AppendLine("Catatan pemindaian (" & totalDiagnostics & "):")
+                For Each pageIndex As Integer In lastScanByPage.Keys
+                    Dim diagnostics As String = lastScanByPage(pageIndex).DescribeDiagnostics()
+                    If Not String.IsNullOrEmpty(diagnostics) Then
+                        report.AppendLine("  Halaman " & pageIndex.ToString() & ":")
+                        report.Append(diagnostics)
+                    End If
+                Next
+            End If
+            report.AppendLine()
+            report.AppendLine("Navigasi: tombol ""Pilih hasil berikutnya"" berpindah halaman hasil " &
+                              "sesuai snapshot pemindaian ini dan berhenti di hasil terakhir.")
+
+            statusLabel.Text = "Pindai semua halaman: " & totalMatches & " objek; " &
+                               pagesWithMatches.Count & " halaman cocok (" & scanTimer.Elapsed.TotalSeconds.ToString("0.0") & " detik)."
+            MessageBox.Show(report.ToString(), "Auto Select — Semua Halaman", MessageBoxButtons.OK,
+                            If(selectReport.SelectionVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
         Catch ex As Exception
+            matchNavigator.Reset()
+            lastScanByPage.Clear()
             ShowError("Auto Select gagal: " & ex.Message)
         End Try
     End Sub
+
+    ''' <summary>Cakupan "Halaman aktif": pindai satu halaman lalu pilih hasilnya.</summary>
+    Private Sub ScanSinglePage(pageIndex As Integer, category As ShapeCategory, scanTimer As Stopwatch)
+        Dim scan As ShapeScanResult = ScanPageForUi(pageIndex, category)
+        If scan Is Nothing Then Return
+        lastScanByPage(pageIndex) = scan
+
+        If scan.MatchCount = 0 Then
+            ' Tidak ada hasil -> seleksi lama dibiarkan apa adanya.
+            statusLabel.Text = "Auto Select: tidak ada objek cocok pada halaman " & pageIndex.ToString() & "."
+            MessageBox.Show("Tidak ditemukan objek yang cocok untuk kategori """ &
+                            ShapeClassifier.CategoryLabel(category) & """ pada halaman " & pageIndex.ToString() & "." &
+                            Microsoft.VisualBasic.Constants.vbCrLf &
+                            ShapeClassifier.CategoryHelp(category) & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                            "Seleksi yang ada tidak diubah.",
+                            "Auto Select", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        matchNavigator.Start(category, False, New Integer() {pageIndex})
+        Dim outcome As SelectionOutcome = SelectPageAtCurrentMatch(category)
+
+        Dim report As New StringBuilder()
+        report.AppendLine("Auto Select — halaman " & pageIndex.ToString())
+        report.AppendLine("Kategori : " & ShapeClassifier.CategoryLabel(category))
+        report.AppendLine("Definisi : " & ShapeClassifier.CategoryHelp(category))
+        report.AppendLine()
+        report.AppendLine(scan.DescribeHits(20))
+        report.AppendLine()
+        report.AppendLine(outcome.Describe())
+        Dim diagnostics As String = scan.DescribeDiagnostics()
+        If Not String.IsNullOrEmpty(diagnostics) Then
+            report.AppendLine()
+            report.AppendLine("Catatan pemindaian:")
+            report.Append(diagnostics)
+        End If
+        report.AppendLine()
+        report.AppendLine("Durasi: " & scanTimer.Elapsed.TotalSeconds.ToString("0.0") & " detik.")
+
+        statusLabel.Text = "Auto Select: " & outcome.SelectionVerifiedCount & " objek terpilih pada halaman " &
+                           pageIndex.ToString() & " (" & scan.MatchCount & " objek cocok)."
+        MessageBox.Show(report.ToString(), "Auto Select", MessageBoxButtons.OK,
+                        If(outcome.SelectionVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
+    End Sub
+
+    ''' <summary>
+    ''' Pindai satu halaman lewat adapter COM. Mengembalikan Nothing bila objek
+    ''' halaman tidak dapat diakses (dicatat ke status).
+    ''' </summary>
+    Private Function ScanPageForUi(pageIndex As Integer, category As ShapeCategory) As ShapeScanResult
+        Dim page As Object
+        Try
+            page = corelDoc.Pages(pageIndex)
+        Catch ex As Exception
+            statusLabel.Text = "Halaman " & pageIndex.ToString() & " tidak dapat diakses: " & ex.Message
+            Return Nothing
+        End Try
+
+        Dim rootNodes As List(Of IShapeNode)
+        Try
+            rootNodes = ShapeNodeAdapter.WrapCollection(page.Shapes)
+        Catch ex As Exception
+            Dim failed As New ShapeScanResult()
+            failed.PageIndex = pageIndex
+            failed.Category = category
+            failed.Diagnostics.Add("Objek halaman tidak dapat dibaca: " & ex.GetType().Name & ": " & ex.Message)
+            Return failed
+        End Try
+
+        Dim options As ShapeScanOptions = ShapeScanOptions.ForCategory(category)
+        options.MaxDepth = ShapeNodeAdapter.MaxDepth
+        Return ShapeScanner.Scan(rootNodes, pageIndex, options)
+    End Function
+
+    ''' <summary>
+    ''' Pilih objek pada halaman hasil yang sedang aktif di navigator.
+    ''' Selalu memakai kategori SNAPSHOT, bukan pilihan ComboBox saat ini.
+    ''' </summary>
+    Private Function SelectPageAtCurrentMatch(scanCategory As ShapeCategory) As SelectionOutcome
+        If Not matchNavigator.HasResults Then Return SelectionOutcome.NotRun("Belum ada hasil pemindaian.")
+
+        Dim pageIndex As Integer = matchNavigator.CurrentPage
+        If pageIndex <= 0 Then Return SelectionOutcome.NotRun("Posisi hasil tidak valid.")
+
+        Dim scan As ShapeScanResult = Nothing
+        If Not lastScanByPage.TryGetValue(pageIndex, scan) Then
+            ' Hasil lama tidak tersedia (mis. dokumen berubah): pindai ulang
+            ' dengan kategori snapshot agar jumlahnya konsisten.
+            scan = ScanPageForUi(pageIndex, scanCategory)
+            If scan Is Nothing Then Return SelectionOutcome.NotRun("Halaman " & pageIndex.ToString() & " tidak dapat diakses.")
+            lastScanByPage(pageIndex) = scan
+        End If
+
+        Try
+            corelDoc.Pages(pageIndex).Activate()
+        Catch ex As Exception
+            Return SelectionOutcome.NotRun("Halaman " & pageIndex.ToString() & " tidak dapat diaktifkan: " & ex.Message)
+        End Try
+
+        Dim outcome As SelectionOutcome = ApplySelection(scan, expectedPageIndex:=pageIndex)
+        statusLabel.Text = "Hasil " & matchNavigator.PositionLabel & " | halaman " & pageIndex.ToString() &
+                           " | " & outcome.SelectionVerifiedCount & " objek terpilih | " &
+                           ShapeClassifier.CategoryLabel(scanCategory) & "."
+        Return outcome
+    End Function
 
     Private Sub NextMatchingPageClicked(sender As Object, e As EventArgs)
         If Not TryBeginOperation("Pindah hasil") Then Return
@@ -1028,162 +1223,139 @@ End Sub
         End Try
     End Sub
 
+    ''' <summary>
+    ''' Berpindah ke halaman hasil berikutnya tanpa melewati/mengulang halaman.
+    ''' Kategori & cakupan dari snapshot pemindaian; perubahan UI terdeteksi.
+    ''' </summary>
     Private Sub NextMatchingPageClickedCore()
         Try
             ConnectToCorel()
-            If matchingPageIndices.Count = 0 Then
-                MessageBox.Show("Jalankan 'Select Otomatis' dengan cakupan 'Pindai semua halaman' terlebih dahulu.", "Tidak ada hasil pemindaian", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            If Not EnsureSameDocument() Then Return
+
+            If Not matchNavigator.HasResults Then
+                MessageBox.Show("Jalankan ""Select otomatis"" dengan cakupan ""Pindai semua halaman"" terlebih dahulu.",
+                                "Tidak ada hasil pemindaian", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return
             End If
-            If currentMatchPagePosition >= matchingPageIndices.Count - 1 Then
-                statusLabel.Text = "Navigasi selesai: hasil terakhir " & matchingPageIndices.Count & "/" & matchingPageIndices.Count & ", halaman aktif " & CInt(corelDoc.ActivePage.Index) & "."
-                MessageBox.Show("Anda sudah berada pada hasil terakhir (" & matchingPageIndices.Count & "/" & matchingPageIndices.Count & "). Navigasi dihentikan dan tidak kembali ke hasil pertama.", "Hasil terakhir", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                Return
+
+            Dim categoryNow As ShapeCategory = ShapeClassifier.CategoryFromIndex(categoryBox.SelectedIndex)
+            Dim allPagesNow As Boolean = (scopeBox.SelectedIndex = 1)
+
+            Dim pageCount As Integer = CInt(corelDoc.Pages.Count)
+            ' 'Step' adalah kata kunci VB -> pakai navStep. Lambda dijadikan variabel
+            ' agar tidak bergantung pada parsing lanjutan baris.
+            Dim pageExists As Func(Of Integer, Boolean) =
+                Function(pageIdx As Integer) pageIdx >= 1 AndAlso pageIdx <= pageCount
+            Dim navStep As NavigationStep = matchNavigator.MoveNext(categoryNow, allPagesNow, pageExists)
+
+            Select Case navStep
+                Case NavigationStep.StaleSnapshot
+                    ' Kategori/cakupan di UI berubah setelah pemindaian: JANGAN
+                    ' memakai daftar lama dengan aturan baru (penyebab halaman
+                    ' terlewat di versi sebelumnya).
+                    statusLabel.Text = "Pilihan kategori/cakupan berubah — jalankan Select otomatis lagi."
+                    MessageBox.Show(
+                        "Kategori atau cakupan diubah setelah pemindaian terakhir." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                        "Hasil pemindaian disimpan untuk: " & ShapeClassifier.CategoryLabel(matchNavigator.Category) &
+                        If(matchNavigator.AllPages, " (semua halaman)", " (halaman aktif)") & "." & Microsoft.VisualBasic.Constants.vbCrLf &
+                        "Pilihan sekarang: " & ShapeClassifier.CategoryLabel(categoryNow) &
+                        If(allPagesNow, " (semua halaman)", " (halaman aktif)") & "." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                        "Navigasi dihentikan agar hasil tidak melompat ke halaman yang salah. " &
+                        "Jalankan Select otomatis lagi untuk memindai dengan pilihan baru.",
+                        "Hasil pemindaian tidak sesuai pilihan", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    Return
+
+                Case NavigationStep.AtEnd
+                    statusLabel.Text = "Navigasi selesai: hasil terakhir " & matchNavigator.PositionLabel &
+                                       ", halaman aktif " & CInt(corelDoc.ActivePage.Index).ToString() & "."
+                    MessageBox.Show("Anda sudah berada pada hasil terakhir (" & matchNavigator.PositionLabel &
+                                    "). Navigasi dihentikan dan tidak kembali ke hasil pertama.",
+                                    "Hasil terakhir", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                    Return
+
+                Case NavigationStep.PageMissing
+                    statusLabel.Text = "Halaman hasil tidak ditemukan lagi di dokumen."
+                    MessageBox.Show("Halaman hasil berikutnya sudah tidak ada di dokumen (dokumen berubah)." &
+                                    Microsoft.VisualBasic.Constants.vbCrLf &
+                                    "Posisi navigasi tidak dimajukan. Jalankan Select otomatis lagi untuk memindai ulang.",
+                                    "Halaman hasil hilang", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    Return
+
+                Case NavigationStep.NotStarted
+                    statusLabel.Text = "Belum ada hasil pemindaian."
+                    Return
+            End Select
+
+            Dim outcome As SelectionOutcome = SelectPageAtCurrentMatch(matchNavigator.Category)
+            If Not outcome.SelectionVerified Then
+                MessageBox.Show("Berpindah ke hasil " & matchNavigator.PositionLabel & ", tetapi seleksi tidak sepenuhnya berhasil:" &
+                                Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                                outcome.Describe(), "Seleksi parsial", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             End If
-            currentMatchPagePosition += 1
-            SelectMatchingPageAtCurrentPosition(categoryBox.SelectedIndex)
         Catch ex As Exception
             ShowError("Gagal berpindah ke halaman cocok: " & ex.Message)
         End Try
     End Sub
 
-    Private Sub SelectMatchingPageAtCurrentPosition(category As Integer)
-        If currentMatchPagePosition < 0 OrElse currentMatchPagePosition >= matchingPageIndices.Count Then Return
-        Dim pageIndex As Integer = matchingPageIndices(currentMatchPagePosition)
-        Dim page As Object = corelDoc.Pages(pageIndex)
-        page.Activate()
-        Dim matches As List(Of Object) = GetMatchingShapes(page, category)
-        Dim selectedCount As Integer = ApplySelection(matches)
-        statusLabel.Text = "Hasil " & (currentMatchPagePosition + 1) & "/" & matchingPageIndices.Count & " | halaman cocok " & pageIndex & " | " & selectedCount & " objek terpilih | halaman aktif " & CInt(corelDoc.ActivePage.Index) & "."
-    End Sub
+    ''' <summary>
+    ''' Terapkan seleksi untuk hasil pemindaian satu halaman.
+    ''' Aturan keselamatan:
+    '''   - Tidak ada target -> seleksi lama TIDAK disentuh.
+    '''   - Tidak ada fallback Delete; kegagalan ClearSelection membatalkan operasi.
+    '''   - Jumlah hasil dibaca ulang dari CorelDRAW (bukan sekadar hitungan
+    '''     pemanggilan AddToSelection yang tidak melempar).
+    ''' </summary>
+    Private Function ApplySelection(scan As ShapeScanResult, expectedPageIndex As Integer) As SelectionOutcome
+        If scan Is Nothing Then Return SelectionOutcome.NotRun("Hasil pemindaian tidak tersedia.")
 
-    Private Function GetMatchingShapes(page As Object, category As Integer) As List(Of Object)
-        Dim matches As New List(Of Object)()
-        Dim shapes As Object = page.Shapes
-        For i As Integer = 1 To CInt(shapes.Count)
-            CollectMatchingShape(shapes(i), category, matches, 0)
-        Next
-        Return matches
-    End Function
-
-    Private Sub CollectMatchingShape(shape As Object, category As Integer, matches As List(Of Object), depth As Integer)
-        ' Batas kedalaman mencegah rekursi tidak berujung jika COM mengembalikan struktur tak terduga.
-        If shape Is Nothing OrElse depth > 32 Then Return
-
-        ' Temuan #2: objek watermark (nama WM_* / layer WATERMARK) tidak boleh ikut
-        ' terpilih. Tanpa ini, "Salin ke halaman" akan menyalin watermark ke halaman
-        ' tujuan sehingga watermark menumpuk.
-        If IsWatermarkShape(shape, depth) Then Return
-        Dim shapeType As Integer
-        Try
-            shapeType = CInt(shape.Type)
-        Catch
-            Return
-        End Try
-
-        ' Untuk kategori Semua Objek, pilih grup sebagai satu kesatuan agar struktur grup terjaga.
-        If category = 4 Then
-            matches.Add(shape)
-            Return
+        Dim targets As List(Of Object) = scan.SelectionTargets()
+        If targets.Count = 0 Then
+            ' Penting: jangan ClearSelection saat kosong (tidak ada operasi destruktif).
+            Return SelectionOutcome.NotRun("Tidak ada target seleksi pada halaman " & expectedPageIndex.ToString() & ".")
         End If
 
-        If shapeType = CDR_GROUP Then
-            Try
-                Dim children As Object = shape.Shapes
-                For i As Integer = 1 To CInt(children.Count)
-                    CollectMatchingShape(children(i), category, matches, depth + 1)
-                Next
-            Catch
-                ' Grup yang isinya tidak dapat dibaca dilewati secara aman.
-            End Try
-            Return
-        End If
-
-        If MatchesCategory(shape, category) Then matches.Add(shape)
-    End Sub
-
-    Private Function MatchesCategory(shape As Object, category As Integer) As Boolean
-        Dim shapeType As Integer
-        Try
-            shapeType = CInt(shape.Type)
-        Catch
-            Return False
-        End Try
-        Select Case category
-            Case 0
-                Return shapeType = CDR_TEXT
-            Case 1
-                Return shapeType = CDR_BITMAP
-            Case 2
-                If shapeType <> CDR_CURVE Then Return False
-                Try
-                    ' Jika status Closed tidak dapat dibaca, jangan menganggap objek sebagai kurva terbuka.
-                    Return CBool(shape.Curve.Closed) = False
-                Catch
-                    Return False
-                End Try
-            Case 3
-                Return shapeType <> CDR_TEXT AndAlso shapeType <> CDR_BITMAP AndAlso shapeType <> CDR_GROUP
-            Case Else
-                Return True
-        End Select
-    End Function
-
-    Private Function ApplySelection(matches As List(Of Object)) As Integer
         ' Tidak ada fallback Delete: kegagalan ClearSelection menghentikan operasi demi keselamatan.
         Try
             corelDoc.ClearSelection()
         Catch ex As Exception
-            Throw New InvalidOperationException("Seleksi lama tidak dapat dibersihkan. Tidak ada objek yang dihapus; proses dibatalkan.", ex)
+            Throw New InvalidOperationException(
+                "Seleksi lama tidak dapat dibersihkan. Tidak ada objek yang dihapus; proses dibatalkan.", ex)
         End Try
 
-        Dim selectedCount As Integer = 0
-        Dim failures As Integer = 0
-        For Each shape As Object In matches
+        Dim outcome As New SelectionOutcome()
+        outcome.ExpectedCount = targets.Count
+        outcome.MatchCount = scan.MatchCount
+
+        For Each target As Object In targets
             Try
-                shape.AddToSelection()
-                selectedCount += 1
-            Catch
-                failures += 1
+                target.AddToSelection()
+                outcome.AddedCalls += 1
+            Catch ex As Exception
+                outcome.Failures.Add("AddToSelection gagal: " & ex.GetType().Name & ": " & ex.Message)
             End Try
         Next
-        If failures > 0 Then
-            statusLabel.Text = "Seleksi parsial: " & selectedCount & " berhasil, " & failures & " gagal."
-        End If
-        Return selectedCount
-    End Function
 
-    ''' <summary>
-    ''' Deteksi objek watermark: nama shape berawalan WM_, berada di layer WATERMARK,
-    ''' atau grup yang berisi salah satunya. Dipakai Auto Select agar watermark tidak
-    ''' pernah ikut terpilih (Temuan #2).
-    ''' </summary>
-    Private Function IsWatermarkShape(shape As Object, Optional depth As Integer = 0) As Boolean
-        If shape Is Nothing OrElse depth > 32 Then Return False
-
-        Dim shapeName As String = Nothing
-        Dim layerName As String = Nothing
+        ' Validasi: hitung objek yang BENAR-BENAR terpilih di CorelDRAW.
         Try
-            shapeName = CStr(shape.Name)
-        Catch
-        End Try
-        Try
-            layerName = CStr(shape.Layer.Name)
-        Catch
-        End Try
-        If WatermarkLayout.IsWatermarkIdentity(shapeName, layerName) Then Return True
-
-        Try
-            If CInt(shape.Type) = CDR_GROUP Then
-                Dim children As Object = shape.Shapes
-                For i As Integer = 1 To CInt(children.Count)
-                    If IsWatermarkShape(children(i), depth + 1) Then Return True
-                Next
+            Dim selectionRange As Object = corelApp.ActiveSelectionRange
+            If selectionRange Is Nothing Then
+                outcome.ActualCount = 0
+            Else
+                outcome.ActualCount = CInt(selectionRange.Count)
             End If
-        Catch
+            outcome.ActualCountKnown = True
+        Catch ex As Exception
+            outcome.ActualCountKnown = False
+            outcome.Failures.Add("Jumlah seleksi tidak dapat diverifikasi: " & ex.GetType().Name & ": " & ex.Message)
         End Try
 
-        Return False
+        If outcome.ActualCountKnown AndAlso outcome.ActualCount <> outcome.ExpectedCount Then
+            outcome.Failures.Add("CorelDRAW melaporkan " & outcome.ActualCount & " objek terpilih, diharapkan " &
+                                 outcome.ExpectedCount & " (objek pada layer terkunci/grup tidak dapat dipilih).")
+        End If
+
+        outcome.CategoryLabel = ShapeClassifier.CategoryLabel(scan.Category)
+        Return outcome
     End Function
 
     ''' <summary>

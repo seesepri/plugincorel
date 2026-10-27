@@ -4,7 +4,8 @@ Static regression checks untuk Corel Page Copier.
 
 Menjaga tiga perbaikan penting tetap ada saat kode diubah:
   #1  Copy dibungkus BeginCommandGroup/EndCommandGroup (satu Ctrl+Z).
-  #2  Auto Select mengecualikan objek watermark (WM_* / layer WATERMARK).
+  #2  Auto Select mengecualikan objek watermark (WM_* / layer WATERMARK),
+      klasifikasi objek terpisah dari UI dan dapat diuji, tanpa operasi destruktif.
   #3  Satuan dokumen dinormalisasi ke mm selama operasi dan dipulihkan setelahnya.
   Fase 1.5  Semua operasi panjang dijaga flag busy (anti re-entrancy DoEvents).
   UI        Tombol "Watermark..." ter-hook ke WatermarkDialog + logo bawaan tertanam.
@@ -37,6 +38,10 @@ files = {
     "batchpolicy": os.path.join(SRC, "BatchFilePolicy.vb"),
     "saveoutput": os.path.join(SRC, "SaveOutputVerification.vb"),
     "connection": os.path.join(SRC, "CorelConnection.vb"),
+    "classifier": os.path.join(SRC, "ShapeClassifier.vb"),
+    "node": os.path.join(SRC, "ShapeNode.vb"),
+    "scanner": os.path.join(SRC, "ShapeScanner.vb"),
+    "navigation": os.path.join(SRC, "SelectionNavigation.vb"),
 }
 
 TESTS = os.path.join(ROOT, "tests", "CorelPageCopier.RegressionTests")
@@ -56,6 +61,10 @@ tests_files = {
     "tests_inputkind": os.path.join(TESTS, "Tests", "CopyInputKindTests.vb"),
     "tests_saveverify": os.path.join(TESTS, "Tests", "SaveOutputVerificationTests.vb"),
     "tests_existing": os.path.join(TESTS, "Tests", "ExistingFeatureTests.vb"),
+    "tests_fakeshape": os.path.join(TESTS, "FakeShapeNode.vb"),
+    "tests_classifier": os.path.join(TESTS, "Tests", "AutoSelectClassifierTests.vb"),
+    "tests_scanner": os.path.join(TESTS, "Tests", "ShapeScannerTests.vb"),
+    "tests_nav": os.path.join(TESTS, "Tests", "SelectionNavigationTests.vb"),
     "tests_inputevidence": os.path.join(TESTS, "Tests", "CopyInputEvidenceTests.vb"),
     "tests_savecontent": os.path.join(TESTS, "Tests", "SaveOutputContentTests.vb"),
     "tests_logsummary": os.path.join(TESTS, "Tests", "BatchLogSummaryTests.vb"),
@@ -136,12 +145,65 @@ def main():
     print("Temuan #1 — undo grouping pada watermark:")
     check("BeginCommandGroup" in read("engine"), "WatermarkEngine memakai BeginCommandGroup")
 
-    print("Temuan #2 — Auto Select mengecualikan watermark:")
-    check("IsWatermarkShape(shape, depth)" in collect_body,
-          "CollectMatchingShape menyaring watermark sebelum menambahkan objek")
-    check(len(re.findall(r"IsWatermarkShape\(shape, depth\)", collect_body)) >= 1,
-          "filter diterapkan tepat sekali per shape (bukan per kategori)")
-    check("IsWatermarkIdentity" in program, "CopierForm memakai helper identitas bersama")
+    print("Temuan #2 — Auto Select mengecualikan watermark (satu titik filter):")
+    scanner = read("scanner")
+    node = read("node")
+    classifier = read("classifier")
+    check("facts.IsWatermark" in scanner,
+          "ShapeScanner menyaring watermark sebelum kategori dihitung")
+    check(scanner.count("facts.IsWatermark") >= 2,
+          "watermark dicek pada node DAN di dalam grup (rekursif)")
+    check("GroupHasWatermark" in scanner,
+          "grup yang memuat watermark dikenali lewat GroupHasWatermark")
+    check("WatermarksSkipped" in scanner, "jumlah watermark yang dilewati dilaporkan (bukan senyap)")
+    check("WatermarkLayout.IsWatermarkIdentity" in classifier,
+          "identitas watermark memakai helper bersama WatermarkLayout")
+
+    print("Auto Select — klasifikasi objek terpisah dari UI:")
+    for member in ("Enum ShapeCategory", "Text", "Bitmap", "OpenCurve", "Vector", "AllObjects"):
+        check(member in classifier, "ShapeCategory memuat kategori " + member)
+    check("Public Shared Function Classify(" in classifier,
+          "ShapeClassifier.Classify dapat diuji terpisah dari UI")
+    check("TextArtistic" in classifier and "TextParagraph" in classifier,
+          "text artistik dan text paragraf dibedakan")
+    check("CurveClosedKnown" in classifier and "CurveClosed" in classifier,
+          "kurva terbuka dideteksi dari status kurva, bukan menebak bounding box")
+    check("Guideline" in classifier and "OleObject" in classifier,
+          "vektor khusus (guideline/OLE) didefinisikan eksplisit, tidak masuk kategori vektor")
+    for fn in ("CategoryLabels", "CategoryLabel", "CategoryHelp", "CategoryFromIndex", "DescribeKind"):
+        check(fn in classifier, "ShapeClassifier." + fn + " tersedia (dipakai UI tanpa logika ganda)")
+
+    print("Auto Select — pemindaian aman (grup, PowerClip, kedalaman, kegagalan baca):")
+    check("MaxDepth" in node, "ShapeNodeAdapter punya batas kedalaman rekursi eksplisit")
+    check("PowerClip" in node, "ShapeNodeAdapter membaca isi PowerClip (bukan hanya shape.Shapes)")
+    check("VisitPowerClip" in scanner, "ShapeScanner memindai isi PowerClip")
+    for counter in ("ScannedShapes", "WatermarksSkipped", "UnreadableShapes", "DepthTruncated",
+                    "ChildrenFailures", "PowerClipsScanned", "PowerClipFailures",
+                    "LockedLayerSkipped", "GroupsVisited"):
+        check(counter in scanner, "diagnostik " + counter + " tersedia")
+    check("DescribeDiagnostics" in scanner, "diagnostik dapat dilaporkan ke pengguna")
+    check("SelectionTargets" in scanner, "target seleksi dipisahkan dari jumlah cocok")
+
+    print("Auto Select — navigasi hasil antar halaman:")
+    nav = read("navigation")
+    for member in ("StaleSnapshot", "AtEnd", "PageMissing", "MoveNext", "PositionLabel"):
+        check(member in nav, "MatchNavigator menangani " + member)
+    check("MatchesSnapshot" in nav, "snapshot kategori+cakupan mencegah lompat/ulang halaman")
+
+    print("Auto Select — tidak ada operasi destruktif & seleksi diverifikasi:")
+    apply_body = method_body(program, "ApplySelection")
+    check(re.search(r"\.Delete\s*\(", apply_body) is None,
+          "ApplySelection tidak memanggil Delete sebagai fallback")
+    empty_at = apply_body.find("targets.Count = 0")
+    clear_at = apply_body.find("ClearSelection()")
+    check(empty_at >= 0 and clear_at > empty_at,
+          "ClearSelection hanya setelah jumlah target > 0 (pilihan lama tidak dihancurkan saat kosong)")
+    check("ActiveSelectionRange" in apply_body,
+          "jumlah objek terpilih diverifikasi lewat ActiveSelectionRange, bukan hitung panggilan")
+    check("NotRun(" in apply_body, "hasil kosong dilaporkan NOT RUN, bukan klaim sukses")
+    autosel_body = method_body(program, "AutoSelectClicked")
+    check("TryBeginOperation" in autosel_body, "Auto Select memakai busy guard")
+    check("EndOperation" in autosel_body, "status busy dipulihkan setelah Auto Select")
 
     print("Temuan #3 — normalisasi satuan dokumen:")
     units_src = read("units")
@@ -424,12 +486,14 @@ def main():
     for key in ("tests_proj", "tests_main", "tests_fake", "tests_copy", "tests_measure", "tests_pipeline",
                 "tests_units", "tests_undo", "tests_batch", "tests_connection",
                 "tests_engine", "tests_existing", "tests_inputkind", "tests_saveverify",
+                "tests_fakeshape", "tests_classifier", "tests_scanner", "tests_nav",
                 "tests_inputevidence", "tests_savecontent", "tests_logsummary"):
         check(os.path.exists(tests_files[key]), key + " ada di repo")
     tests_proj_src = read_path(tests_files["tests_proj"]) if os.path.exists(tests_files["tests_proj"]) else ""
     for source in ("CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                    "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb", "WatermarkEngine.vb",
-                   "SaveOutputVerification.vb"):
+                   "SaveOutputVerification.vb",
+                   "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb"):
         check(source in tests_proj_src, "test mengompilasi ulang " + source + " (sumber yang sama)")
     tests_copy_src = read_path(tests_files["tests_copy"]) if os.path.exists(tests_files["tests_copy"]) else ""
     check("geometri tidak terukur -> Partial" in tests_copy_src,
@@ -576,7 +640,8 @@ def main():
                  "WatermarkTokens.vb", "PresetStore.vb", "BatchLog.vb",
                  "CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                  "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb",
-                 "SaveOutputVerification.vb"):
+                 "SaveOutputVerification.vb",
+                 "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb"):
         check(name in vbproj, name + " terdaftar di <Compile Include>")
 
     print()

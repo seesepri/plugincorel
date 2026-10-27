@@ -46,6 +46,11 @@
     <Compile Include="BatchFilePolicy.vb" />
     <Compile Include="SaveOutputVerification.vb" />
     <Compile Include="CorelConnection.vb" />
+    <!-- Auto Select: klasifikasi, penelusuran pohon, dan navigasi hasil (murni, diuji unit). -->
+    <Compile Include="ShapeClassifier.vb" />
+    <Compile Include="ShapeNode.vb" />
+    <Compile Include="ShapeScanner.vb" />
+    <Compile Include="SelectionNavigation.vb" />
   </ItemGroup>
   <ItemGroup>
     <!-- Logo bawaan untuk fitur watermark (dua varian warna, tertanam di EXE). -->

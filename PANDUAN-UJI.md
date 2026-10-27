@@ -207,6 +207,10 @@ Lakukan **setelah** §3.4 (watermark sudah ada).
 [ ] 3.8  Batch 5 file + log CSV + buka folder hasil
 [ ] 3.9  Preset: simpan, restart, timpa, hapus, file rusak
 [ ] 3.10 Busy guard: klik ganda, tutup jendela, pemulihan setelah gagal
+[ ] 11   Auto Select: kategori teks/bitmap/kurva/vektor/semua (AS-1 … AS-6)
+[ ] 11   Auto Select: watermark tidak pernah terpilih; grup utuh; PowerClip = container
+[ ] 11   Auto Select: navigasi semua halaman tanpa lompat/ulang, berhenti di hasil terakhir
+[ ] 11   Auto Select: tidak ada hasil -> seleksi lama utuh, tidak ada objek terhapus
 [ ] Semua dokumen uji masih utuh (tidak ada file asli yang berubah)
 ```
 
@@ -257,7 +261,10 @@ Sertakan (agar bisa direproduksi cepat):
 | Fitur | File | Bagian analisa |
 |---|---|---|
 | Salin objek + undo grouping + geometri | `Program.vb` (`CopyClicked`) | `ANALISA-WATERMARK.md` §4.4 |
-| Auto Select (exclude watermark) | `Program.vb` (`CollectMatchingShape`) | §4.4 |
+| Auto Select — klasifikasi objek | `ShapeClassifier.vb` | `docs/AUDIT-AUTOSELECT.md` §3–§4 |
+| Auto Select — penelusuran objek (grup/PowerClip) | `ShapeScanner.vb`, `ShapeNode.vb` | idem §3.4–§3.7 |
+| Auto Select — navigasi hasil & verifikasi seleksi | `SelectionNavigation.vb` | idem §3.7–§3.9 |
+| Auto Select — jembatan UI | `Program.vb` (`AutoSelectClickedCore`, `ApplySelection`) | idem §3 |
 | Busy guard | `Program.vb` + `OperationGate` | §4.5 |
 | Watermark inti | `WatermarkEngine.vb` | §3, §4 |
 | Model & matematika | `WatermarkLayout.vb` | §3.2, §3.4 |
@@ -326,6 +333,93 @@ Buat di `D:\uji-audit\`:
 
 Tempelkan bukti (isi kotak laporan + CSV + screenshot Object Manager) ke tiket/PR, lalu ubah
 status di atas menjadi PASS/FAIL.
+
+---
+
+## 11. Uji audit Auto Select (BARU — status: **NOT RUN** di lingkungan audit)
+
+Bagian ini memverifikasi perbaikan Auto Select 2026-10-27
+(lihat `docs/AUDIT-AUTOSELECT.md`). Regression test otomatis memakai struktur
+dataset yang sama, jadi angka di UI bisa dibandingkan langsung dengan angka di
+test (`tests/CorelPageCopier.RegressionTests/Tests/ShapeScannerTests.vb`).
+
+**Aturan penting saat menguji:** Auto Select **tidak boleh** menghapus satu objek
+pun. Sebelum tiap skenario, simpan salinan dokumen atau periksa jumlah objek di
+Object Manager; setelah skenario, jumlah objek harus sama.
+
+### 11.1 Persiapan data uji
+
+Buat folder `D:\uji-autoselect\` dan buat dokumen berikut di CorelDRAW 2022
+(late-bound, aplikasi 64-bit).
+
+| # | Nama file | Isi dokumen |
+|---|---|---|
+| AS-1 | `teks.cdr` | 1 halaman: 1 teks artistik ("Judul"), 1 teks paragraf (3 baris), 1 grup berisi 1 teks paragraf |
+| AS-2 | `bitmap.cdr` | 1 halaman: 1 bitmap bebas, 1 grup berisi 2 bitmap, 1 PowerClip (rectangle) berisi 1 bitmap |
+| AS-3 | `kurva.cdr` | 1 halaman: 1 kurva terbuka (garis 3 titik, tidak ditutup), 1 kurva tertutup (buat dengan *Auto-Close* / gabungkan ujung), 1 grup bersarang 2 level berisi 1 kurva terbuka |
+| AS-4 | `vektor.cdr` | 1 halaman: rectangle, ellipse, polygon, 1 kurva terbuka, 1 kurva tertutup, **plus** 1 garis bantu horizontal & 1 objek OLE (*Insert ▸ OLE Object*, mis. lembar kerja kosong) |
+| AS-5 | `campur.cdr` | 1 halaman: gabungan skenario di atas (teks, bitmap, kurva, vektor, 3 grup, 1 PowerClip, 1 objek OLE, 1 guideline) — **tanpa** watermark |
+| AS-6 | `tanpa-teks.cdr` | 1 halaman: hanya 2 rectangle. Untuk uji "tidak ada hasil" |
+| AS-7 | `watermark-campur.cdr` | 3 halaman: (a) halaman 1 berisi watermark `WM_`+ objek sah, (b) halaman 2 berisi grup campuran (bitmap sah + objek `WM_`), (c) halaman 3 tanpa watermark. Beri watermark lewat aplikasi ini dulu (*Watermark…*) supaya penamaan sesuai |
+
+Semua dokumen: **satuan mm**, jumlah halaman seperti tertulis.
+
+### 11.2 Skenario kategori (cakupan "Halaman aktif")
+
+Jalankan Auto Select dengan cakupan **Halaman aktif** pada tiap dokumen, lalu
+bandingkan angka di kotak laporan dengan tabel berikut.
+
+| # | Dokumen | Kategori | Harapan: jumlah "objek cocok" | Harapan: seleksi terverifikasi | Yang tidak boleh terjadi |
+|---|---|---|---|---|---|
+| 11.2.1 | AS-1 | Teks | **3** (2 level atas + 1 dalam grup) | 3 objek (atau peringatan bila CorelDRAW memilih grupnya) | teks tidak terlewat; bitmap tidak ikut |
+| 11.2.2 | AS-1 | Bitmap | 0 | tidak ada operasi | seleksi lama **tidak** hilang, tidak ada dialog error |
+| 11.2.3 | AS-2 | Bitmap | **4** | 4 target / 3 bila isi PowerClip dipilih sebagai container (lihat catatan) | isi PowerClip **tidak** diklaim terpilih sendiri |
+| 11.2.4 | AS-3 | Kurva terbuka | **2** | 2 | kurva tertutup tidak ikut |
+| 11.2.5 | AS-4 | Vektor | **6** | 6 | guideline & objek OLE **tidak** ikut (cek daftar objek di laporan) |
+| 11.2.6 | AS-5 | Semua objek | = jumlah objek level atas, **grup dihitung 1** | sama | tidak ada grup yang dipecah; PowerClip dihitung 1 (container) |
+| 11.2.7 | AS-6 | Teks | **0** | tidak ada operasi | pesan "Seleksi yang ada tidak diubah"; objek di kanvas tetap seperti sebelumnya |
+| 11.2.8 | AS-7 | Bitmap | 3 halaman dipindai; halaman 3 tetap 0 | — | objek `WM_` **tidak pernah** ada di daftar hasil |
+
+**Cara memeriksa "seleksi terverifikasi":** kotak laporan memuat baris
+`Target seleksi : N` dan `Terverifikasi : N objek` (atau "TIDAK terverifikasi").
+Bila CorelDRAW melaporkan jumlah berbeda, dialog memakai ikon **peringatan** —
+itu bukan PASS untuk skenario tersebut, catat angkanya.
+
+### 11.3 Skenario semua halaman & navigasi
+
+| # | Langkah | Hasil yang diharapkan |
+|---|---|---|
+| 11.3.1 | AS-7, kategori Bitmap, cakupan **Semua halaman**, Auto Select | Pemindaian menyebut progres "halaman 1/3 … 3/3"; laporan memuat **total objek** + rincian per halaman (termasuk halaman dengan 0) dan jumlah halaman dipindai = 3 |
+| 11.3.2 | Setelah 11.3.1, klik "Pilih hasil berikutnya" berulang | Urutan halaman hasil **naik, tanpa lompat & tanpa ulang**; status menyebut "hasil ke-2 dari 2"; di hasil terakhir muncul `AtEnd` dan **tidak** kembali ke halaman pertama |
+| 11.3.3 | Setelah 11.3.1, ubah ComboBox kategori ke Vektor, lalu klik "Pilih hasil berikutnya" | Ditolak dengan pesan bahwa hasil pemindaian milik kategori lain (minta pindai ulang) — **tidak** memilih objek dengan kategori berbeda |
+| 11.3.4 | Setelah 11.3.1, hapus satu halaman hasil secara manual, lalu klik "Pilih hasil berikutnya" | Pesan "halaman hasil tidak ditemukan"; posisi **tidak** dimajukan |
+| 11.3.5 | Matikan Auto Select di tengah pemindaian dengan menutup dokumen | Muncul error yang jelas, status busy dilepas, tombol Auto Select bisa dipakai lagi (tidak "menggantung") |
+| 11.3.6 | Klik Auto Select dua kali cepat (double click) | Hanya satu pemindaian berjalan (busy guard), tidak ada dua dialog |
+
+### 11.4 Skenario keamanan (tidak destruktif)
+
+| # | Langkah | Hasil yang diharapkan |
+|---|---|---|
+| 11.4.1 | Pilih 1 objek di kanvas, jalankan Auto Select kategori yang **tidak** punya hasil | Seleksi awal **tetap** terpilih setelah dialog ditutup (tidak ada `ClearSelection`) |
+| 11.4.2 | Kunci layer (ikon gembok di Object Manager), jalankan Auto Select kategori vektor pada layer itu | Laporan menyebut objek cocok **dan** jumlah "tidak dapat dipilih" (layer terkunci) — bukan mengklaim semua terpilih |
+| 11.4.3 | Bandingkan jumlah objek di Object Manager sebelum & sesudah semua skenario | **Sama persis**; tidak ada objek yang terhapus/berubah posisi |
+| 11.4.4 | Tekan Ctrl+Z setelah Auto Select (beberapa kali) | Tidak ada perubahan dokumen yang perlu di-undo dari Auto Select (hanya seleksi) |
+
+### 11.5 Hasil uji (isi saat dijalankan di Windows + CorelDRAW 2022)
+
+| Skenario | Status | Catatan |
+|---|---|---|
+| 11.2.1 – 11.2.8 | **NOT RUN** | CorelDRAW tidak tersedia di lingkungan audit |
+| 11.3.1 – 11.3.6 | **NOT RUN** | idem |
+| 11.4.1 – 11.4.4 | **NOT RUN** | idem |
+| Regression test otomatis (157 test) | **PASS** | `dotnet run --project tests/CorelPageCopier.RegressionTests -c Release` → `157 lulus, 0 gagal` |
+| Pemeriksaan statis | **PASS** | `python3 tools/static-checks.py` → 255 lulus, 0 gagal |
+| Kompilasi net48 (lingkungan audit) | **PASS** | 0 error |
+| Build Release x64 (MSBuild Windows) | **PASS** | CI run 40446380975 (`windows-latest`, commit `a859858`): `bin\x64\Release\CorelPageCopier.exe`, Build succeeded, 0 warning, 0 error |
+| Static checks + regression test di Windows | **PASS** | run yang sama: 255 PASS / 0 FAIL dan `157 lulus, 0 gagal` |
+
+Tempelkan isi kotak laporan Auto Select + screenshot Object Manager (jumlah objek
+sebelum/sesudah) ke tiket/PR, lalu ubah status di atas menjadi PASS/FAIL.
 
 ---
 

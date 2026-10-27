@@ -42,6 +42,10 @@
     <Compile Include="..\..\CorelPageCopier\BatchFilePolicy.vb" Link="Source\BatchFilePolicy.vb" />
     <Compile Include="..\..\CorelPageCopier\SaveOutputVerification.vb" Link="Source\SaveOutputVerification.vb" />
     <Compile Include="..\..\CorelPageCopier\CorelConnection.vb" Link="Source\CorelConnection.vb" />
+    <Compile Include="..\..\CorelPageCopier\ShapeClassifier.vb" Link="Source\ShapeClassifier.vb" />
+    <Compile Include="..\..\CorelPageCopier\ShapeNode.vb" Link="Source\ShapeNode.vb" />
+    <Compile Include="..\..\CorelPageCopier\ShapeScanner.vb" Link="Source\ShapeScanner.vb" />
+    <Compile Include="..\..\CorelPageCopier\SelectionNavigation.vb" Link="Source\SelectionNavigation.vb" />
     <Compile Include="..\..\CorelPageCopier\WatermarkEngine.vb" Link="Source\WatermarkEngine.vb" />
   </ItemGroup>
 
@@ -49,6 +53,7 @@
     <!-- Harness test + fake CorelDRAW -->
     <Compile Include="TestRunner.vb" />
     <Compile Include="FakeCorel.vb" />
+    <Compile Include="FakeShapeNode.vb" />
     <Compile Include="TestMain.vb" />
     <Compile Include="Tests\*.vb" />
   </ItemGroup>
