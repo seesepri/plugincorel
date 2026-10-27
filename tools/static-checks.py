@@ -41,6 +41,9 @@ files = {
     "node": os.path.join(SRC, "ShapeNode.vb"),
     "scanner": os.path.join(SRC, "ShapeScanner.vb"),
     "navigation": os.path.join(SRC, "SelectionNavigation.vb"),
+    "pdfvalidator": os.path.join(SRC, "PdfProofValidator.vb"),
+    "placement": os.path.join(SRC, "WatermarkPlacementCheck.vb"),
+    "batchtracker": os.path.join(SRC, "BatchRunTracker.vb"),
 }
 
 TESTS = os.path.join(ROOT, "tests", "CorelPageCopier.RegressionTests")
@@ -62,6 +65,11 @@ tests_files = {
     "tests_classifier": os.path.join(TESTS, "Tests", "AutoSelectClassifierTests.vb"),
     "tests_scanner": os.path.join(TESTS, "Tests", "ShapeScannerTests.vb"),
     "tests_nav": os.path.join(TESTS, "Tests", "SelectionNavigationTests.vb"),
+    "tests_pdffixture": os.path.join(TESTS, "PdfFixture.vb"),
+    "tests_pdf": os.path.join(TESTS, "Tests", "PdfProofValidatorTests.vb"),
+    "tests_placement": os.path.join(TESTS, "Tests", "WatermarkPlacementTests.vb"),
+    "tests_logformat": os.path.join(TESTS, "Tests", "BatchLogFormatTests.vb"),
+    "tests_batchrel": os.path.join(TESTS, "Tests", "BatchReliabilityTests.vb"),
 }
 
 failures = []
@@ -383,7 +391,12 @@ def main():
     print("Audit reliabilitas C — undo grouping:")
     undo_src = read("undo")
     engine_body = method_body(engine, "ApplyToDocument")
+    page_body = method_body(engine, "ApplyToPage")
     folder_body = method_body(engine, "ApplyToFolder")
+    # Refactor Fokus A: logika per file pindah ke ProcessSingleBatchFile.
+    file_body = method_body(engine, "ProcessSingleBatchFile")
+    csv_body = method_body(engine, "WriteBatchCsvRow")
+    batch_body = folder_body + "\n" + file_body
     remove_body = method_body(engine, "RemoveFromDocument")
     check("Class UndoGroupGuard" in undo_src, "state grup undo dilacak di UndoGroupGuard")
     check("SingleUndoGuaranteed" in undo_src and "ShouldCallEnd" in undo_src,
@@ -406,15 +419,16 @@ def main():
     check("Class BatchFileOutcome" in policy_src, "status per file dimodelkan (BatchFileOutcome)")
     check("Class BatchStatusRules" in policy_src, "aturan status terpusat (BatchStatusRules)")
     check("EvaluateApplyOnly" in policy_src, "status operasi satu dokumen memakai aturan yang sama")
-    check("fileOk" not in folder_body,
+    check("fileOk" not in batch_body,
           "status file tidak lagi dihitung dari partResult.Ok saja")
-    check("outcome.SaveSucceeded = True" in folder_body, "save dicatat terpisah dari processing")
-    check("New FileInfo(targetPath).Length" in folder_body,
+    check("outcome.SaveSucceeded = True" in batch_body, "save dicatat terpisah dari processing")
+    check("New FileInfo(targetPath).Length" in batch_body,
           "penyimpanan diverifikasi (file ada & tidak kosong)")
-    check("entry.Status = outcome.StatusLabel()" in folder_body,
-          "baris CSV memakai status yang sama dengan laporan")
-    check("localResult.FilesOk" in folder_body and "localResult.FilesPartial" in folder_body,
-          "ringkasan memakai hitungan status yang sama")
+    check("outcome.StatusLabel()" in csv_body and "outcome.StatusLabel()" in folder_body,
+          "baris CSV & ringkasan memakai status yang sama dengan laporan")
+    check("tracker.OkCount" in folder_body and "tracker.PartialCount" in folder_body and
+          "tracker.CancelledCount" in folder_body,
+          "ringkasan mengevaluasi outcome yang sama (OK/SEBAGIAN/GAGAL/DIBATALKAN)")
     check("WriteCsvLog AndAlso writeLogRow" in engine,
           "baris CSV ganda untuk file yang sama dihilangkan (batch menulis baris otoritatif)")
     check("PagesIntended" in engine and "PagesFailed" in engine,
@@ -424,10 +438,10 @@ def main():
     check("BatchFilePolicy.SelectSources(" in folder_body,
           "daftar sumber difilter sebelum diproses")
     check("IsGeneratedOutput" in policy_src, "deteksi output lama (_wm) tersedia")
-    check("ResolveUniqueOutputPath" in folder_body, "benturan nama output ditangani")
-    check("ValidateNewOutputPath" in folder_body and "ValidateOverwriteTarget" in folder_body,
+    check("ResolveUniqueOutputPath" in file_body, "benturan nama output ditangani")
+    check("ValidateNewOutputPath" in file_body and "ValidateOverwriteTarget" in file_body,
           "mode file baru & mode timpa divalidasi")
-    check("SamePath(targetPath, sourceFile)" in folder_body,
+    check("SamePath(targetPath, sourceFile)" in file_body,
           "mode file baru tidak menimpa file sumber")
     check('Directory.GetFiles(folder, "*" & BatchFilePolicy.SourceExtension' in folder_body,
           "pencarian file memakai ekstensi kebijakan")
@@ -465,12 +479,15 @@ def main():
     for key in ("tests_proj", "tests_main", "tests_fake", "tests_copy", "tests_measure", "tests_pipeline",
                 "tests_units", "tests_undo", "tests_batch", "tests_connection",
                 "tests_engine", "tests_existing", "tests_fakeshape",
-                "tests_classifier", "tests_scanner", "tests_nav"):
+                "tests_classifier", "tests_scanner", "tests_nav",
+                "tests_pdffixture", "tests_pdf", "tests_placement",
+                "tests_logformat", "tests_batchrel"):
         check(os.path.exists(tests_files[key]), key + " ada di repo")
     tests_proj_src = read_path(tests_files["tests_proj"]) if os.path.exists(tests_files["tests_proj"]) else ""
     for source in ("CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                    "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb", "WatermarkEngine.vb",
-                   "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb"):
+                   "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb",
+                   "PdfProofValidator.vb", "WatermarkPlacementCheck.vb", "BatchRunTracker.vb"):
         check(source in tests_proj_src, "test mengompilasi ulang " + source + " (sumber yang sama)")
     tests_copy_src = read_path(tests_files["tests_copy"]) if os.path.exists(tests_files["tests_copy"]) else ""
     check("geometri tidak terukur -> Partial" in tests_copy_src,
@@ -484,12 +501,68 @@ def main():
     check("SaveAs gagal -> status GAGAL" in tests_engine_src,
           "ada test: save gagal tidak dihitung OK")
 
+    print("Audit batch/PDF 2026-10-27 — Fokus A (batch yang aman):")
+    pdf_src = read("pdfvalidator")
+    placement_src = read("placement")
+    tracker_src = read("batchtracker")
+    check("RequestStop" in engine and "_stopRequested" in engine,
+          "batch bisa dihentikan (RequestStop) dan diperiksa di antara file")
+    check("_stopRequested" in engine_body, "penghentian juga diperiksa di antara halaman")
+    check("Class BatchRunTracker" in tracker_src, "pembukuan file batch terpusat (BatchRunTracker)")
+    check("CancelRemainingFiles" in engine, "sisa file setelah penghentian tetap dicatat")
+    check("BatchFileStatus.Cancelled" in policy_src or "Cancelled = 3" in policy_src,
+          "status DIBATALKAN terpisah dari GAGAL")
+    check('Return "DIBATALKAN"' in policy_src, "label DIBATALKAN dipakai bersama")
+    check("Finally" in folder_body and "BatchLog.SummaryEntry" in folder_body,
+          "baris ringkasan CSV selalu ditulis (juga saat dihentikan/gagal)")
+    check("tracker.IsConsistent()" in folder_body,
+          "konsistensi jumlah file diperiksa, bukan diasumsikan")
+    check("CountOpenDocuments" in engine and "DocumentsLeftOpen" in engine,
+          "kebocoran dokumen CorelDRAW dideteksi (dokumen harus tertutup)")
+    check("doc.Close()" in file_body, "dokumen selalu ditutup di blok Finally")
+    check("tidak dapat dibuka" in file_body, "file yang tidak dapat dibuka dilaporkan GAGAL")
+
+    print("Audit batch/PDF 2026-10-27 — Fokus C (PDF proof):")
+    check("Class PdfProofValidator" in pdf_src, "validator struktur PDF tersedia")
+    check("PdfProofValidator.ValidateFile(" in engine, "PDF hasil ekspor divalidasi")
+    check("File.Exists(pdfPath)" in engine and "TIDAK dibuat" in engine,
+          "file PDF yang tidak pernah dibuat TIDAK dianggap sukses")
+    check("BuildPdfExpectation" in engine,
+          "jumlah & ukuran halaman pembanding diambil dari dokumen sumber")
+    check("MillimetersToPoints" in pdf_src and "PageSizeMillimeters" in placement_src,
+          "konversi mm -> point eksplisit (bukan asumsi satuan)")
+    check("ProofPdfInvalid" in engine and "ProofPdfInvalid" in policy_src,
+          "PDF tidak valid menurunkan status file (SEBAGIAN), bukan OK")
+    check("PdfProofStatus.Unverifiable" in pdf_src,
+          "status Unverifiable dipisah dari Valid (tidak mengklaim tanpa bukti)")
+    check("opasitas, clipping" in pdf_src,
+          "keterbatasan validasi otomatis didokumentasikan di modul")
+
+    print("Audit batch/PDF 2026-10-27 — Fokus B (akurasi penempatan):")
+    check("Class WatermarkPlacementCheck" in placement_src, "pemeriksa penempatan tersedia")
+    check("VerifyPlacement(" in engine, "penempatan objek diverifikasi setelah diletakkan")
+    check("ClampAxis" in read("layout"), "posisi dijepit agar objek tidak keluar halaman")
+    check("RotatedBounds" in placement_src, "bounding box rotasi dihitung eksplisit")
+    check("FitsOnPage" in placement_src and "terpotong" in engine,
+          "objek yang lebih besar dari halaman dilaporkan (clipping)")
+    check("ExpectedTileCount" in placement_src, "jumlah tile yang diharapkan dapat diuji")
+
+    print("Audit batch/PDF 2026-10-27 — Fokus D (logging):")
+    log_src = read("batchlog")
+    check("NormalizeCellText" in log_src, "sel CSV dinormalkan (newline tidak memecah baris)")
+    check("DIBATALKAN" in log_src, "ringkasan CSV memuat status DIBATALKAN")
+    check("Baris ringkasan CSV TIDAK dapat ditulis" in folder_body,
+          "kegagalan menulis log tidak ditelan")
+    check("StopBatchClicked" in read("dialog") and "activeEngine" in read("dialog"),
+          "UI punya tombol Hentikan yang terhubung ke mesin")
+
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb",
                  "WatermarkTokens.vb", "PresetStore.vb", "BatchLog.vb",
                  "CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                  "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb",
-                 "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb"):
+                 "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb",
+                 "PdfProofValidator.vb", "WatermarkPlacementCheck.vb", "BatchRunTracker.vb"):
         check(name in vbproj, name + " terdaftar di <Compile Include>")
 
     print()

@@ -42,6 +42,25 @@ Public Class BatchLog
         })
     End Function
 
+    ''' <summary>
+    ''' Rapikan teks sel agar SATU baris log = SATU baris fisik di file.
+    ''' Nama file atau pesan exception bisa memuat CR/LF (mis. pesan Windows
+    ''' multi-baris); bila dibiarkan, baris CSV akan terpecah dan jumlah baris
+    ''' tidak lagi sama dengan jumlah file. Karakter kontrol diganti pemisah
+    ''' yang aman, bukan dihapus, supaya informasinya tidak hilang.
+    ''' </summary>
+    Public Shared Function NormalizeCellText(value As String) As String
+        If String.IsNullOrEmpty(value) Then Return ""
+        Dim text As String = value.Replace(vbCrLf, " / ").Replace(ChrW(13), " ").Replace(ChrW(10), " ")
+        text = text.Replace(ChrW(9), " ")
+        ' Pemisah baris Unicode & karakter kontrol lain yang bikin Excel kacau.
+        text = text.Replace(ChrW(11), " ").Replace(ChrW(12), " ").Replace(ChrW(0), "")
+        Do While text.Contains("  ")
+            text = text.Replace("  ", " ")
+        Loop
+        Return text.Trim()
+    End Function
+
     ''' <summary>Escape satu sel CSV: dibungkus kutip bila memuat pemisah/kutip/newline.</summary>
     Public Shared Function EscapeCell(value As String) As String
         Dim text As String = If(value, "")
@@ -58,11 +77,11 @@ Public Class BatchLog
     Public Shared Function BuildLine(entry As BatchLogEntry) As String
         Dim cells As New List(Of String)()
         cells.Add(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
-        cells.Add(EscapeCell(entry.FileName))
+        cells.Add(EscapeCell(NormalizeCellText(entry.FileName)))
         cells.Add(entry.Pages.ToString(CultureInfo.InvariantCulture))
         cells.Add(entry.Shapes.ToString(CultureInfo.InvariantCulture))
         cells.Add(EscapeCell(entry.Status))
-        cells.Add(EscapeCell(entry.Message))
+        cells.Add(EscapeCell(NormalizeCellText(entry.Message)))
         cells.Add(entry.DurationSeconds.ToString("0.0", CultureInfo.InvariantCulture))
         Return String.Join(Delimiter.ToString(), cells.ToArray())
     End Function
@@ -109,12 +128,23 @@ Public Class BatchLog
     Public Shared Function SummaryEntry(settings As String, files As Integer, ok As Integer,
                                         partialCount As Integer, failed As Integer,
                                         seconds As Double) As BatchLogEntry
+        Return SummaryEntry(settings, files, ok, partialCount, failed, 0, seconds)
+    End Function
+
+    ''' <summary>
+    ''' Baris ringkasan dengan file DIBATALKAN dihitung terpisah, sehingga
+    ''' OK + SEBAGIAN + GAGAL + DIBATALKAN = jumlah file yang direncanakan.
+    ''' </summary>
+    Public Shared Function SummaryEntry(settings As String, files As Integer, ok As Integer,
+                                        partialCount As Integer, failed As Integer,
+                                        cancelled As Integer, seconds As Double) As BatchLogEntry
         Dim entry As New BatchLogEntry()
         entry.FileName = "(ringkasan batch)"
         entry.Pages = files
         entry.Shapes = ok
         entry.Status = "RINGKASAN"
-        entry.Message = If(settings, "") & " | OK " & ok & ", SEBAGIAN " & partialCount & ", GAGAL " & failed
+        entry.Message = If(settings, "") & " | OK " & ok & ", SEBAGIAN " & partialCount &
+                        ", GAGAL " & failed & ", DIBATALKAN " & cancelled
         entry.DurationSeconds = seconds
         Return entry
     End Function

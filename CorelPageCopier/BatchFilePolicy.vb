@@ -29,6 +29,12 @@ Public Enum BatchFileStatus
     ' 'Partial' adalah kata kunci VB, jadi dinamai PartialSuccess.
     PartialSuccess = 1
     Failed = 2
+    ''' <summary>
+    ''' File tidak diproses karena batch dihentikan pengguna atau karena
+    ''' exception di tengah proses. Sengaja DIPISAH dari Failed: file ini tidak
+    ''' pernah dicoba, jadi tidak boleh dihitung sebagai kegagalan pemrosesan.
+    ''' </summary>
+    Cancelled = 3
 End Enum
 
 ''' <summary>Satu file yang sengaja dilewati saat pengumpulan sumber batch.</summary>
@@ -79,6 +85,16 @@ Public Class BatchFileOutcome
     ' --- kegagalan fatal (file tidak bisa dibuka / exception tak terduga) ----
     Public FatalError As String = ""
 
+    ''' <summary>True bila file tidak diproses karena batch dihentikan.</summary>
+    Public Cancelled As Boolean = False
+
+    ''' <summary>
+    ''' True bila PDF proof diminta tetapi hasilnya tidak lolos validasi
+    ''' (tidak dibuat, rusak, atau jumlah/ukuran halaman tidak cocok).
+    ''' CDR output bisa tetap tersimpan, tetapi status file menjadi SEBAGIAN.
+    ''' </summary>
+    Public ProofPdfInvalid As Boolean = False
+
     Public Messages As New List(Of String)()
 
     Public Sub New()
@@ -92,9 +108,16 @@ Public Class BatchFileOutcome
     ''' <summary>Status akhir — SATU sumber kebenaran untuk CSV, ringkasan, dan UI.</summary>
     Public ReadOnly Property Status As BatchFileStatus
         Get
-            Return BatchStatusRules.Evaluate(ApplyAttempted, PagesIntended, PagesApplied, PagesFailed,
-                                             SaveAttempted, SaveSucceeded,
-                                             Not String.IsNullOrEmpty(FatalError))
+            If Cancelled Then Return BatchFileStatus.Cancelled
+            Dim baseStatus As BatchFileStatus = BatchStatusRules.Evaluate(
+                ApplyAttempted, PagesIntended, PagesApplied, PagesFailed,
+                SaveAttempted, SaveSucceeded, Not String.IsNullOrEmpty(FatalError))
+            ' PDF proof diminta tetapi tidak valid = hasil belum lengkap, jadi
+            ' tidak boleh berstatus OK walaupun CDR-nya tersimpan.
+            If baseStatus = BatchFileStatus.Ok AndAlso ProofPdfInvalid Then
+                Return BatchFileStatus.PartialSuccess
+            End If
+            Return baseStatus
         End Get
     End Property
 
@@ -105,6 +128,7 @@ Public Class BatchFileOutcome
     ''' <summary>Ringkasan pesan untuk CSV (tanpa newline).</summary>
     Public Function MessageText() As String
         Dim parts As New List(Of String)()
+        If Cancelled Then parts.Add("tidak diproses")
         If Not String.IsNullOrEmpty(FatalError) Then parts.Add(FatalError)
         For Each message As String In Messages
             If Not String.IsNullOrEmpty(message) Then parts.Add(message)
@@ -118,9 +142,10 @@ Public Class BatchFileOutcome
         End If
         If SaveAttempted Then
             parts.Add(If(SaveSucceeded, "save OK", "SAVE GAGAL"))
-        Else
+        ElseIf Not Cancelled Then
             parts.Add("save tidak dijalankan")
         End If
+        If ProofPdfInvalid Then parts.Add("PDF proof TIDAK VALID")
         Return String.Join(" | ", parts.ToArray())
     End Function
 
@@ -178,6 +203,8 @@ Public Class BatchStatusRules
                 Return "OK"
             Case BatchFileStatus.PartialSuccess
                 Return "SEBAGIAN"
+            Case BatchFileStatus.Cancelled
+                Return "DIBATALKAN"
             Case Else
                 Return "GAGAL"
         End Select

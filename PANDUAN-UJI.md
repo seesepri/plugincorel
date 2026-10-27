@@ -211,6 +211,9 @@ Lakukan **setelah** §3.4 (watermark sudah ada).
 [ ] 11   Auto Select: watermark tidak pernah terpilih; grup utuh; PowerClip = container
 [ ] 11   Auto Select: navigasi semua halaman tanpa lompat/ulang, berhenti di hasil terakhir
 [ ] 11   Auto Select: tidak ada hasil -> seleksi lama utuh, tidak ada objek terhapus
+[ ] 12   Batch: file gagal/dipakai/rusak tidak dihitung sukses; stop -> DIBATALKAN
+[ ] 12   PDF: PDF VALID hanya bila struktur+jumlah+ukuran halaman cocok (cek visual)
+[ ] 12   CSV: satu baris per file, kolom tidak bergeser, ringkasan = jumlah file
 [ ] Semua dokumen uji masih utuh (tidak ada file asli yang berubah)
 ```
 
@@ -272,6 +275,10 @@ Sertakan (agar bisa direproduksi cepat):
 | Preset | `PresetStore.vb` | §4.7 |
 | Log CSV | `BatchLog.vb` | §4.7 |
 | Token per halaman | `WatermarkTokens.vb` | §4.8 |
+| Batch: stop/exception/pembukuan | `BatchRunTracker.vb`, `WatermarkEngine.vb` | `docs/AUDIT-WATERMARK-BATCH.md` §1 |
+| Penempatan & verifikasi posisi | `WatermarkPlacementCheck.vb`, `WatermarkLayout.vb` | idem §2 |
+| Validasi PDF proof | `PdfProofValidator.vb` | idem §3 |
+| Format log CSV | `BatchLog.vb` | idem §4 |
 | Pemeriksaan statis | `tools/static-checks.py` | §4.4–§4.8 |
 
 ---
@@ -420,3 +427,125 @@ itu bukan PASS untuk skenario tersebut, catat angkanya.
 
 Tempelkan isi kotak laporan Auto Select + screenshot Object Manager (jumlah objek
 sebelum/sesudah) ke tiket/PR, lalu ubah status di atas menjadi PASS/FAIL.
+
+---
+
+## 12. Uji audit batch & PDF proof (BARU — status: **NOT RUN** di lingkungan audit)
+
+Bagian ini memverifikasi perbaikan pada `docs/AUDIT-WATERMARK-BATCH.md`.
+Dibagi tegas menjadi tiga tingkat bukti yang **tidak boleh dicampur**:
+
+1. **Otomatis** (unit/regression test) — sudah dijalankan, angka di §12.7.
+2. **Validasi struktur PDF** — otomatis untuk struktur; hasil pada PDF nyata
+   CorelDRAW **belum** diuji (isi tabel §12.6 saat menjalankan).
+3. **Pemeriksaan visual** — hanya bisa dilakukan manusia di CorelDRAW /
+   pembaca PDF. **Tidak ada klaim "siap cetak"** dari bagian mana pun di sini.
+
+### 12.1 Data uji
+
+Di `D:\uji-batchpdf\`:
+
+| # | Nama | Isi |
+|---|---|---|
+| W1 | `satu-teks.cdr` | 3 halaman A4 mm, isi objek desain (kotak + teks) — untuk watermark teks |
+| W2 | `logo.cdr` | 2 halaman A4, untuk watermark logo (PNG 600×200 px) |
+| W3 | `teks-logo.cdr` | 2 halaman A4, untuk kombinasi teks + logo |
+| W4 | `campur-ukuran.cdr` | 4 halaman: A4, A5, 100×150 mm, A4 landscape |
+| W5 | `inch.cdr` | 2 halaman Letter, **Rulers = inches** |
+| W6 | `point.cdr` | 2 halaman A4, **Rulers = points** |
+| W7 | `tile.cdr` | 1 halaman A4 untuk mode tile (jarak X 60, Y 45) |
+| B1 | folder `batch\` | `a.cdr`, `b.cdr`, `c.cdr` (masing-masing 2–3 halaman), plus `a_wm.cdr` (output lama) |
+| B2 | folder `batch-dipakai\` | `x.cdr` yang **sedang dibuka** di CorelDRAW saat batch dijalankan |
+| B3 | folder `batch-rusak\` | `y.cdr` yang sudah dirusak (rename acak isinya / 0 byte) |
+| B4 | folder `batch-tolak-tulis\` | `z.cdr` + folder read-only (atau jalankan sebagai user tanpa hak tulis) |
+
+### 12.2 Fokus A — batch aman
+
+| # | Langkah | Hasil yang diharapkan |
+|---|---|---|
+| 12.2.1 | B1, **tanpa** centang "Timpa file asli", jalankan batch | `a_wm.cdr` lama dilewati (alasan "output batch sebelumnya"); `a_wm.cdr`, `b_wm.cdr`, `c_wm.cdr` dibuat/diperbarui; file asli **tidak berubah** (bandingkan tanggal modifikasi) |
+| 12.2.2 | Ulangi 12.2.1 | Idempoten: hasil sama, tidak ada `_wm_wm.cdr` |
+| 12.2.3 | B2 (file sedang terbuka), jalankan batch | File itu berstatus **GAGAL** dengan alasan jelas; file lain tetap **OK** |
+| 12.2.4 | B3 (file rusak), jalankan batch | **GAGAL**, alasan menyebut file tidak dapat dibuka |
+| 12.2.5 | B4 (folder tanpa hak tulis), jalankan batch | File diproses, tetapi muncul peringatan **"Baris log CSV TIDAK dapat ditulis"**; ringkasan tetap ditampilkan |
+| 12.2.6 | Jalankan batch 10+ file, lalu klik **Hentikan** pada file ke-3 | File ke-3 selesai disimpan; file 4–10 berstatus **DIBATALKAN**; ringkasan: `OK + DIBATALKAN = jumlah file`; jumlah baris CSV = 10 + ringkasan + header |
+| 12.2.7 | Setelah 12.2.6, buka Object Manager / Task Manager | Tidak ada dokumen `*_wm.cdr` yang tertinggal terbuka di CorelDRAW |
+| 12.2.8 | Paksa exception: cabut media/rename folder saat batch berjalan (atau tutup CorelDRAW) | Muncul pesan error; **ringkasan tetap tertulis**; file yang belum diproses tercatat DIBATALKAN atau GAGAL (tidak ada yang hilang) |
+| 12.2.9 | Batch, lalu **Ctrl+Z** satu kali di dokumen yang baru dibuka | Tidak perlu: batch menutup dokumen tanpa menyimpan ke file asli (mode file baru). Pada mode timpa, dokumen sumber berubah dan itu **dinyatakan** di konfirmasi |
+| 12.2.10 | Cek file output | Setiap output bukan 0 byte dan dapat dibuka kembali di CorelDRAW |
+
+### 12.3 Fokus B — akurasi watermark (visual)
+
+Untuk tiap baris: terapkan watermark, lalu **periksa dengan mata** dan catat
+apakah posisi sesuai. Bila laporan menampilkan peringatan penempatan
+(`penempatan ... menyimpang dari perhitungan`), catat angkanya — itu bukan PASS.
+
+| # | Dokumen / setelan | Yang diperiksa |
+|---|---|---|
+| 12.3.1 | W1, teks, anchor **Center**, margin 10 | Teks tepat di tengah; jarak ke tepi ≥ margin |
+| 12.3.2 | W1, sembilan anchor 3×3 (TopLeft … BottomRight) | Tiap posisi menempel tepi sesuai margin 10 mm, tidak keluar halaman |
+| 12.3.3 | W1, margin 40 mm | Jarak 40 mm dari tepi; tidak ada bagian terpotong |
+| 12.3.4 | W1, teks sangat panjang (200+ karakter) | Bila lebih lebar dari halaman: muncul peringatan **"lebih besar dari halaman … terpotong"**; teks dipusatkan, bukan menghilang ke kiri |
+| 12.3.5 | W1, rotasi 30° / 45° / 90° | Sudut sesuai; posisi tetap di dalam halaman |
+| 12.3.6 | W2, skala logo 35 mm vs 70 mm | Rasio aspek logo tidak berubah (bandingkan lebar:tinggi) |
+| 12.3.7 | W2, opasitas 20% / 50% / 100% | 20% paling transparan; 100% pekat; tidak ada logo yang hilang |
+| 12.3.8 | W7, mode tile, jarak X 60 / Y 45 | Pola merata; **tidak ada** watermark terpotong di tepi; jarak antar watermark konsisten; jumlah shape di Object Manager = jumlah posisi di laporan |
+| 12.3.9 | W7, jarak X 10 / Y 5 (lebih kecil dari ukuran objek) | Tidak saling menumpuk (jarak minimum otomatis 110%/140%) |
+| 12.3.10 | W4 (A4/A5/100×150/landscape) | Setiap halaman memakai ukuran halamannya sendiri; landscape tidak tertukar |
+| 12.3.11 | W5 (inch) dan W6 (point) | Posisi & ukuran sama seperti dokumen mm; **satuan dokumen kembali** ke inch/point setelah operasi (cek Rulers) |
+| 12.3.12 | W3 (teks + logo) | Keduanya tampil; tidak saling menutupi; rotasi berlaku untuk keduanya |
+| 12.3.13 | W1 dengan "Ganti watermark lama" aktif, jalankan 3× | Tetap 1 watermark per halaman (tidak menumpuk) |
+| 12.3.14 | W1, lalu **Hapus watermark** | Semua objek `WM_*` hilang; objek desain lain **tidak berubah** (bandingkan posisi/warna) |
+| 12.3.15 | Token: teks `ORDER {order} · Hal. {page}/{pages} · {file} · {date} {time}` di 3 halaman | Halaman 1/2/3 benar; `{pages}` = 3; `{order}` dari nama file (mis. `INV-2026-0912.cdr` → `2026-0912`); tanggal/jam masuk akal |
+
+### 12.4 Fokus C — PDF proof
+
+| # | Langkah | Hasil yang diharapkan |
+|---|---|---|
+| 12.4.1 | W1, centang PDF proof, terapkan | Laporan menyebut **`PDF VALID (n halaman, struktur & ukuran cocok)`** dan file `<nama>_proof.pdf` ada |
+| 12.4.2 | Buka PDF di Adobe Acrobat Reader / Edge | PDF **terbuka tanpa error**; jumlah halaman = jumlah halaman dokumen (bandingkan status `halaman x/y`) |
+| 12.4.3 | Periksa properti dokumen PDF (Reader: File ▸ Properties) | Ukuran halaman sama dengan dokumen sumber (A4 210×297 mm = 595×842 pt); orientasi landscape untuk halaman landscape |
+| 12.4.4 | Lihat tiap halaman | Watermark terlihat di halaman yang ditentukan; halaman lain bersih |
+| 12.4.5 | Periksa tepi halaman pada zoom 400% | Tidak ada watermark terpotong (clipping) di tepi |
+| 12.4.6 | Bandingkan opasitas watermark di PDF vs di CorelDRAW | Sama (PDF tidak menambah/mengurangi transparansi) |
+| 12.4.7 | PDF dari W4 (halaman campur ukuran) | 4 halaman dengan ukuran masing-masing benar; laporan tetap `PDF VALID` |
+| 12.4.8 | Rename/rusak file PDF hasil sebelum dibuka, lalu ulangi ekspor ke nama yang sama (folder read-only) | Muncul kegagalan; **tidak** ada klaim "PDF valid" |
+| 12.4.9 | Cek laporan bila PDF berstatus **TIDAK DAPAT DIVERIFIKASI** | Status file = **SEBAGIAN**; pesan meminta cek manual — bukan PASS |
+
+> Catatan: validasi struktur PDF **tidak** membuktikan kualitas cetak. Untuk
+> klaim siap cetak, perlu uji cetak nyata (di luar cakupan audit ini).
+
+### 12.5 Fokus D — log CSV
+
+| # | Langkah | Hasil yang diharapkan |
+|---|---|---|
+| 12.5.1 | Buka `watermark-log.csv` di Excel (regional Indonesia) | Terbuka rapi, kolom: `Waktu; File; Halaman; Shape; Status; Pesan; Durasi_detik` |
+| 12.5.2 | Batch dengan satu file gagal (B2/B3) | Satu baris per file + satu baris `RINGKASAN`; status di CSV = status di UI = ringkasan |
+| 12.5.3 | Batch yang dihentikan (12.2.6) | Baris `DIBATALKAN` ada sebanyak file yang tidak diproses; `OK + SEBAGIAN + GAGAL + DIBATALKAN` = jumlah file |
+| 12.5.4 | File dengan nama memuat `;` dan tanda kutip (mis. `a;b"c.cdr`) | Nama utuh dalam satu sel, kolom tidak bergeser |
+| 12.5.5 | Pesan error multi-baris | Tetap satu baris fisik di CSV (isi pesan digabung dengan `/`) |
+| 12.5.6 | Periksa kolom `Waktu` dan `Durasi_detik` | Waktu masuk akal (format `yyyy-MM-dd HH:mm:ss`), durasi > 0 |
+
+### 12.6 Hasil uji (isi saat dijalankan di Windows + CorelDRAW 2022)
+
+| Skenario | Status | Catatan |
+|---|---|---|
+| 12.2.1 – 12.2.10 (batch) | **NOT RUN** | CorelDRAW tidak tersedia di lingkungan audit |
+| 12.3.1 – 12.3.15 (visual) | **NOT RUN** | idem |
+| 12.4.1 – 12.4.9 (PDF) | **NOT RUN** | idem |
+| 12.5.1 – 12.5.6 (CSV) | **NOT RUN** di CorelDRAW; format sudah diuji unit | |
+| Validasi struktur PDF pada PDF **nyata** CorelDRAW | **NOT RUN** | validator hanya diuji dengan PDF sintetis |
+| Cetak fisik / kualitas siap cetak | **NOT RUN** | tidak diklaim |
+
+### 12.7 Bukti otomatis (sudah dijalankan)
+
+| Pemeriksaan | Hasil |
+|---|---|
+| Regression test (net8.0, tanpa CorelDRAW) | `216 lulus, 0 gagal` — termasuk 59 test baru (PDF 16, penempatan 19, log 10, batch 12) |
+| Pemeriksaan statis | `295 pemeriksaan lulus, 0 gagal` |
+| Kompilasi net48 | `Build succeeded, 0 warning, 0 error` |
+| Build Release x64 Windows | dijalankan CI `windows-latest` (lihat log PR) |
+
+Tempelkan isi kotak laporan + potongan CSV + screenshot PDF/Object Manager ke
+tiket/PR, lalu ubah status di tabel §12.6 menjadi PASS/FAIL. Status **hanya**
+boleh PASS bila langkah visual benar-benar diperiksa dengan mata.

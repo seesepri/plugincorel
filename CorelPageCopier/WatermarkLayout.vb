@@ -284,7 +284,30 @@ Public Class WatermarkLayout
                 bottom = m
         End Select
 
+        ' --- Clamp: objek tidak boleh keluar halaman ---------------------
+        ' Margin besar pada halaman kecil (atau teks yang lebih lebar dari
+        ' halaman) menghasilkan koordinat negatif -> objek terpotong (clipping).
+        ' Objek dipusatkan pada sumbu yang tidak muat, lalu dijepit ke dalam
+        ' halaman. Tanpa ini, watermark "berhasil" tetapi tidak terlihat utuh.
+        left = ClampAxis(left, pageWidth, objectWidth)
+        bottom = ClampAxis(bottom, pageHeight, objectHeight)
+
         Return New PointF(CSng(left), CSng(bottom))
+    End Function
+
+    ''' <summary>
+    ''' Jepit posisi agar objek tetap berada di dalam halaman pada satu sumbu.
+    ''' Objek yang lebih besar dari halaman dipusatkan (tidak bisa dihindari,
+    ''' tetapi setidaknya simetris dan tidak menempel di luar).
+    ''' </summary>
+    Public Shared Function ClampAxis(position As Double, pageLength As Double,
+                                     objectLength As Double) As Double
+        If pageLength <= 0 Then Return 0
+        If objectLength >= pageLength Then Return (pageLength - objectLength) / 2.0
+        If position < 0 Then Return 0
+        Dim maxPosition As Double = pageLength - objectLength
+        If position > maxPosition Then Return maxPosition
+        Return position
     End Function
 
     ''' <summary>
@@ -304,8 +327,11 @@ Public Class WatermarkLayout
         Dim stepX As Double = Math.Max(spacingX, objectWidth * 1.1)
         Dim stepY As Double = Math.Max(spacingY, objectHeight * 1.4)
 
-        Dim nx As Integer = Math.Max(1, CInt(Math.Ceiling(pageWidth / stepX)))
-        Dim ny As Integer = Math.Max(1, CInt(Math.Ceiling(pageHeight / stepY)))
+        ' Jumlah kolom/baris dihitung dari ruang yang BENAR-BENAR tersedia
+        ' (halaman dikurangi ukuran objek). Dengan Ceiling(page/step) dulu,
+        ' pola terakhir bisa keluar halaman sehingga watermark terpotong.
+        Dim nx As Integer = Math.Max(1, CInt(Math.Floor((pageWidth - objectWidth) / stepX)) + 1)
+        Dim ny As Integer = Math.Max(1, CInt(Math.Floor((pageHeight - objectHeight) / stepY)) + 1)
 
         Dim startX As Double = (pageWidth - ((nx - 1) * stepX) - objectWidth) / 2.0
         Dim startY As Double = (pageHeight - ((ny - 1) * stepY) - objectHeight) / 2.0

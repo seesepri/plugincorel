@@ -32,6 +32,10 @@ Module TestMain
         AutoSelectClassifierTests.Register(runner)
         ShapeScannerTests.Register(runner)
         SelectionNavigationTests.Register(runner)
+        PdfProofValidatorTests.Register(runner)
+        WatermarkPlacementTests.Register(runner)
+        BatchLogFormatTests.Register(runner)
+        BatchReliabilityTests.Register(runner)
         EngineTests.Register(runner)
         ExistingFeatureTests.Register(runner)
 
