@@ -51,6 +51,9 @@
     <Compile Include="ShapeNode.vb" />
     <Compile Include="ShapeScanner.vb" />
     <Compile Include="SelectionNavigation.vb" />
+    <Compile Include="PdfProofValidator.vb" />
+    <Compile Include="WatermarkPlacementCheck.vb" />
+    <Compile Include="BatchRunTracker.vb" />
   </ItemGroup>
   <ItemGroup>
     <!-- Logo bawaan untuk fitur watermark (dua varian warna, tertanam di EXE). -->
