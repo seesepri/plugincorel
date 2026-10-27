@@ -36,11 +36,12 @@ diverifikasi bersih lalu dikunci oleh test.
 | `python3 tools/static-checks.py` | **PASS** | **279 pemeriksaan, 0 FAIL**, exit 0 (237 → 279; +42 pemeriksaan baru) |
 | Regression/unit test **tanpa CorelDRAW** | **PASS** | **167 test, 0 gagal** (sebelumnya 138; **+29 test baru**), exit 0 |
 | Compile seluruh 13+ file produksi (net48, `Option Strict Off`, x64) | **PASS (compile-check)** | `dotnet build tests/CorelPageCopier.CompileCheck -c Release` → `Build succeeded, 0 Warning, 0 Error` |
-| **Build Release x64 via MSBuild di Windows** | **NOT RUN (lingkungan ini)** | Tidak ada Windows/MSBuild di lingkungan review. Build Windows terakhir yang PASS ada pada PR head sebelumnya (CI run 40452373897, artifact `CorelPageCopier-Windows-x64`). Commit perbaikan ini **wajib** dipush agar CI `windows-latest` membangunnya; lihat §8. |
-| **Integration test CorelDRAW 2022** | **NOT RUN** | CorelDRAW tidak tersedia di lingkungan mana pun saat ini. Prosedur manual: `PANDUAN-UJI.md` §10, §14, dan **§15 (baru)**. |
+| **Build Release x64 via MSBuild di Windows** | **PASS (CI `windows-latest`)** | run [40464110877](https://github.com/seesepri/plugincorel/actions/runs/40464110877) pada commit `883b13b` — seluruh langkah success: static checks, regression tests, MSBuild .NET Framework 4.8, package, upload artifact. Artifact `CorelPageCopier-Windows-x64` berisi `release-package/CorelPageCopier.exe` **224.256 byte**, `PE\0\0`, Machine **0x8664 = x86-64**. |
+| **Integration test CorelDRAW 2022** | **NOT RUN** | CorelDRAW tidak tersedia di lingkungan review. Prosedur manual: `PANDUAN-UJI.md` §10, §14, dan **§15 (baru)**. Ini satu-satunya tahap yang belum punya bukti otomatis. |
 
-> Tidak ada klaim “sudah diuji di Windows/CorelDRAW” di dokumen ini. Dua baris terakhir
-> sengaja NOT RUN sampai benar-benar dijalankan.
+> Tidak ada klaim “sudah diuji di CorelDRAW”. Build Windows x64 **dibuktikan CI** (jalur
+> MSBuild yang sama dengan rilis); integration CorelDRAW 2022 tetap **NOT RUN** sampai
+> benar-benar dijalankan manual.
 
 ---
 
@@ -280,19 +281,19 @@ Tanpa token unik, fixture menulis isi identik sehingga benar-benar tidak ada buk
 ## 8. Yang harus dijalankan sebelum merge (jangan merge otomatis)
 
 ```bash
-# 1. dorong commit perbaikan ke branch PR (fast-forward, tanpa merge)
-git push origin HEAD:audit/reliability-copy-verification
+# 1. [SELESAI] commit perbaikan didorong fast-forward ke branch PR (tanpa merge)
+#    f0deb26..883b13b  ->  origin/audit/reliability-copy-verification
 
-# 2. CI akan menjalankan: static checks -> regression tests -> msbuild Release x64 (windows-latest)
-#    Lihat tab Actions pada PR #2; artifact: CorelPageCopier-Windows-x64
+# 2. [SELESAI] CI: static checks -> regression tests -> msbuild Release x64 (windows-latest)
+#    run 40464110877 = success; artifact CorelPageCopier-Windows-x64 (EXE PE32+ x86-64)
 
-# 3. di mesin Windows + CorelDRAW 2022: jalankan PANDUAN-UJI.md §10, §14, §15
+# 3. [BELUM] di mesin Windows + CorelDRAW 2022: jalankan PANDUAN-UJI.md §10, §14, §15
 ```
 
 Checklist merge (semua harus ✅):
 
-- [ ] CI PR hijau termasuk langkah `msbuild /t:Rebuild /p:Configuration=Release /p:Platform=x64`
-- [ ] artifact berisi `CorelPageCopier.exe` PE32+ **x86-64**
+- [x] CI PR hijau termasuk langkah `msbuild /t:Rebuild /p:Configuration=Release /p:Platform=x64`
+- [x] artifact berisi `CorelPageCopier.exe` PE32+ **x86-64**
 - [ ] §15 manual: mode timpa yang gagal **tidak** merusak berkas sumber tanpa peringatan
 - [ ] §15 manual: berkas `<nama>_wm.cdr` hasil CorelDRAW 2022 lolos verifikasi (bentuk ZIP)
 - [ ] §15 manual: copy satu objek tetap **Verified** (bukan Partial)

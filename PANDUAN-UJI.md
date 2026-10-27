@@ -375,7 +375,7 @@ Laporan lengkap: `docs/REVIEW-PR2-FOLLOWUP-2.md`.
 | `python3 tools/static-checks.py` | **PASS** — 279 pemeriksaan, 0 gagal |
 | Regression test | **PASS** — `167 lulus, 0 gagal` (138 test lama tetap lulus) |
 | Kompilasi net48 x64 (`CompileCheck`) | **PASS** — 0 warning, 0 error |
-| Build Release x64 via MSBuild Windows | **NOT RUN** di lingkungan audit — jalankan CI (`windows-latest`) dengan push commit |
+| Build Release x64 via MSBuild Windows | **PASS (CI `windows-latest`)** — run 40464110877, `CorelPageCopier.exe` 224.256 byte, PE32+ **x86-64** |
 | Integration CorelDRAW 2022 | **NOT RUN** |
 
 ### 15.2 Uji manual di CorelDRAW 2022 (status awal: NOT RUN)
