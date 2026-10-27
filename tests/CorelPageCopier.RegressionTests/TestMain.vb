@@ -29,6 +29,9 @@ Module TestMain
         UndoGroupTests.Register(runner)
         BatchPolicyTests.Register(runner)
         ConnectionIdentityTests.Register(runner)
+        AutoSelectClassifierTests.Register(runner)
+        ShapeScannerTests.Register(runner)
+        SelectionNavigationTests.Register(runner)
         EngineTests.Register(runner)
         ExistingFeatureTests.Register(runner)
 
