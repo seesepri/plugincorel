@@ -326,3 +326,36 @@ Buat di `D:\uji-audit\`:
 
 Tempelkan bukti (isi kotak laporan + CSV + screenshot Object Manager) ke tiket/PR, lalu ubah
 status di atas menjadi PASS/FAIL.
+
+---
+
+## 14. Uji follow-up review PR #2 (BARU — status: **NOT RUN** di lingkungan audit)
+
+Perbaikan 2026-10-27 menutup dua celah kebenaran status:
+`CopyMeasurement` (jenis input & kegagalan `Count`) dan verifikasi penyimpanan
+(`SaveOutputVerification`). Yang diuji otomatis tanpa CorelDRAW sudah PASS;
+langkah di bawah ini **wajib** dijalankan di CorelDRAW 2022.
+
+### 14.1 Bukti otomatis (sudah dijalankan)
+
+| Pemeriksaan | Hasil |
+|---|---|
+| Regression test | `138 lulus, 0 gagal` (103 test lama tetap lulus) |
+| Pemeriksaan statis | `237 pemeriksaan`, 0 gagal |
+| Kompilasi net48 | `Build succeeded, 0 warning, 0 error` |
+| Build Release x64 Windows | **PASS** — CI run 40452213172: `bin\x64\Release\CorelPageCopier.exe`, 0 warning, 0 error |
+
+### 14.2 Uji manual di CorelDRAW (status awal: NOT RUN)
+
+| No | Langkah | Hasil yang benar | Status |
+|---|---|---|---|
+| 14.2.1 | Pilih **beberapa** objek di halaman sumber (bukan satu), lalu **Salin ke halaman terpilih** | laporan menyebut jumlah objek yang benar; semua objek ikut tersalin; status per halaman **Verified/Partial** sesuai kenyataan | NOT RUN |
+| 14.2.2 | Pilih **satu** objek saja, ulangi copy | tetap seperti sebelumnya (tidak ada regresi pada Shape tunggal) | NOT RUN |
+| 14.2.3 | Pilih objek yang berada di **layer terkunci** (atau objek yang tidak bisa dipilih) | status halaman **Partial/Failed** dengan alasan, bukan Verified | NOT RUN |
+| 14.2.4 | Watermark batch, mode **file baru**, folder berisi file CDR | file `<nama>_wm.cdr` dibuat; ringkasan **OK**; pesan simpan menyebut `save OK (BARU)` | NOT RUN |
+| 14.2.5 | Watermark batch, mode **timpa**, file sumber read-only / tidak bisa ditulis | file **tidak** berubah; status **GAGAL** dengan label `TIDAK BERUBAH`/`SAVE GAGAL`; **bukan** OK | NOT RUN |
+| 14.2.6 | Setelah 14.2.5, periksa Object Manager & waktu modifikasi file | dokumen tidak berubah; tidak ada dokumen kedua yang terbuka di CorelDRAW (verifikasi tidak membuka ulang file) | NOT RUN |
+| 14.2.7 | Lihat CSV log pada 14.2.4 & 14.2.5 | kolom Status = `OK` vs `GAGAL` sesuai kenyataan; tidak ada baris OK palsu | NOT RUN |
+
+Ubah NOT RUN menjadi PASS hanya bila benar-benar diperiksa dengan mata di
+CorelDRAW 2022.
