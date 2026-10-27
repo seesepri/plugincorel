@@ -5,7 +5,6 @@ Imports System
 Imports System.Collections.Generic
 Imports System.Diagnostics
 Imports System.Drawing
-Imports System.Runtime.InteropServices
 Imports System.Text
 Imports System.Windows.Forms
 
@@ -20,21 +19,26 @@ End Module
 
 Public Class CopierForm
     Inherits Form
+    ' Port UI untuk service: koneksi, copy, dan progres operasi panjang.
+    Implements ICorelPrompt, ICopyPrompt, IProgressSink
     Private ReadOnly pagesList As New CheckedListBox()
     Private ReadOnly categoryBox As New ComboBox()
     Private ReadOnly scopeBox As New ComboBox()
     Private ReadOnly statusLabel As New Label()
     Private ReadOnly sourceLabel As New Label()
-    Private corelApp As Object
-    Private corelDoc As Object
     Private sourcePageIndex As Integer = -1
-    Private Const CDR_UNIT_MM As Integer = 3
-    ''' <summary>Toleransi geometri terdokumentasi (lihat CopyVerification.ToleranceMm).</summary>
-    Private Const GEOMETRY_TOLERANCE_MM As Double = CopyVerification.ToleranceMm
 
-    ' Temuan F: identitas dokumen yang terakhir dimuat. Dipakai untuk memastikan
-    ' dokumen target pada saat Copy adalah dokumen (dan instance) yang sama.
-    Private loadedIdentity As DocumentIdentity = Nothing
+    ' ========================================================================
+    '  ARSITEKTUR (refactor aman): FORM HANYA UI
+    '    koneksi + identitas dokumen  -> CorelConnectionService
+    '    copy + verifikasi + laporan  -> CopyService
+    '    orkestrasi Auto Select       -> AutoSelectService
+    '  Tidak ada lagi COM mentah / MessageBox di dalam logika operasi; form
+    '  mengimplementasikan ICorelPrompt, ICopyPrompt, dan IProgressSink.
+    ' ========================================================================
+    Private ReadOnly _connection As CorelConnectionService
+    Private ReadOnly _copyService As CopyService
+    Private ReadOnly _autoSelect As AutoSelectService
 
     ' ========================================================================
     '  FASE 1.5 (#3): STATUS SIBUK GLOBAL
@@ -123,6 +127,10 @@ Public Class CopierForm
         MinimumSize = New Size(520, 700)
         BackColor = Color.FromArgb(245, 247, 250)
         Font = New Font("Segoe UI", 9.0F)
+        ' Service dibuat sekali; form berlaku sebagai port UI untuk semuanya.
+        _connection = New CorelConnectionService(Me)
+        _copyService = New CopyService(_connection, Me, Me)
+        _autoSelect = New AutoSelectService(_connection, Me)
         BuildUi()
         AddHandler Shown, AddressOf FormShown
         AddHandler FormClosing, AddressOf CopierFormClosing
@@ -429,184 +437,133 @@ End Sub
     End Sub
 
     ''' <summary>
-    ''' Menghubungkan ke CorelDRAW.
-    '''
-    ''' Temuan F (audit reliabilitas):
-    '''   - Instance yang sedang dipakai pengguna diutamakan (ROT / GetActiveObject).
-    '''   - Instance KEDUA tidak pernah dibuka diam-diam: pengguna harus menyetujui
-    '''     lebih dulu, dan diberi tahu jendela CorelDRAW baru sudah terbuka.
-    '''   - Objek COM yang sudah tidak valid (instance ditutup) dilepas, bukan dipakai ulang.
+    ''' Menghubungkan ke CorelDRAW (delegasi tipis).
+    ''' Seluruh logika — instance berjalan diutamakan, persetujuan sebelum membuka
+    ''' instance baru, pelepasan COM yang tidak valid — ada di
+    ''' CorelConnectionService sehingga bisa diuji tanpa CorelDRAW.
     ''' </summary>
     Private Sub ConnectToCorel()
-        Dim lastError As Exception = Nothing
+        _connection.Connect()
+    End Sub
 
-        ' (1) Pakai koneksi yang sudah berhasil sebelumnya bila masih valid.
-        If corelApp IsNot Nothing Then
-            If ComObjectHealth.IsAlive(corelApp) Then
-                Try
-                    Dim existingDoc As Object = corelApp.ActiveDocument
-                    If existingDoc IsNot Nothing Then
-                        corelDoc = existingDoc
-                        Return
-                    End If
-                    lastError = New InvalidOperationException("CorelDRAW terhubung, tetapi belum ada dokumen aktif.")
-                Catch ex As Exception
-                    lastError = ex
-                End Try
-            Else
-                lastError = New InvalidOperationException("Koneksi CorelDRAW sebelumnya sudah tidak valid (instance ditutup?).")
-            End If
-            ReleaseCorelReferences()
-        End If
+    ''' <summary>
+    ''' Pastikan target masih dokumen + instance yang sama seperti saat daftar
+    ''' halaman dimuat (Temuan F). Pesan peringatan ditampilkan lewat
+    ''' NotifyDocumentMismatch di bawah.
+    ''' </summary>
+    Private Function EnsureSameDocument() As Boolean
+        Return _connection.EnsureSameDocument()
+    End Function
 
-        ' (2) Lampirkan ke instance CorelDRAW yang SUDAH berjalan (Running Object Table).
-        For Each progId As String In New String() {"CorelDRAW.Application.24", "CorelDRAW.Application"}
-            Try
-                Dim running As Object = Marshal.GetActiveObject(progId)
-                If running IsNot Nothing Then
-                    Try
-                        Dim runningDoc As Object = running.ActiveDocument
-                        If runningDoc IsNot Nothing Then
-                            corelApp = running
-                            corelDoc = runningDoc
-                            Return
-                        End If
-                        lastError = New InvalidOperationException(
-                            "CorelDRAW (" & progId & ") ditemukan, tetapi tidak ada dokumen aktif. " &
-                            "Buka dokumen CDR di jendela itu, lalu klik Muat ulang.")
-                        ComObjectHealth.TryRelease(running)
-                    Catch ex As Exception
-                        lastError = ex
-                        ComObjectHealth.TryRelease(running)
-                    End Try
-                End If
-            Catch ex As Exception
-                lastError = ex
-            End Try
-        Next
+    ' ========================================================================
+    '  PORT UI (ICorelPrompt / ICopyPrompt / IProgressSink)
+    '  Service tidak pernah memanggil MessageBox sendiri. Teks dialog di bawah
+    '  SENGAJA sama persis dengan versi sebelum refactor.
+    ' ========================================================================
 
-        ' (3) Tidak ada instance berjalan yang bisa dipakai: MINTA IZIN sebelum
-        '     membuka instance baru (jangan diam-diam membuat instance kedua).
-        Dim detail As String = If(lastError Is Nothing, "Tidak ada objek aplikasi yang tersedia.", lastError.Message)
-        Dim prompt As String =
+    ''' <summary>Izin membuka instance CorelDRAW baru (jangan pernah diam-diam).</summary>
+    Public Function ConfirmOpenNewInstance(detail As String) As Boolean Implements ICorelPrompt.ConfirmOpenNewInstance
+        Dim question As String =
             "Tidak dapat memakai jendela CorelDRAW yang sedang berjalan." &
             Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
             "Detail: " & detail & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
             "Buka instance CorelDRAW BARU melalui COM sekarang?" & Microsoft.VisualBasic.Constants.vbCrLf &
             "PENTING: dokumen yang diproses adalah dokumen yang Anda buka di jendela BARU itu, " &
             "bukan dokumen di jendela lain."
-        If MessageBox.Show(prompt, "Koneksi CorelDRAW", MessageBoxButtons.YesNo,
-                           MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
-            Throw New InvalidOperationException(
-                "Koneksi dibatalkan oleh pengguna. Tidak ada instance CorelDRAW baru yang dibuka. " &
-                "Buka dokumen CDR di CorelDRAW lalu klik Muat ulang. Detail: " & detail, lastError)
-        End If
-
-        For Each progId As String In New String() {"CorelDRAW.Application.24", "CorelDRAW.Application"}
-            Try
-                Dim appType As Type = Type.GetTypeFromProgID(progId, False)
-                If appType Is Nothing Then Continue For
-                Dim newApp As Object = Activator.CreateInstance(appType)
-                If newApp Is Nothing Then Continue For
-
-                Try
-                    newApp.Visible = True
-                Catch
-                End Try
-
-                Dim newDoc As Object = Nothing
-                Try
-                    newDoc = newApp.ActiveDocument
-                Catch
-                    newDoc = Nothing
-                End Try
-
-                If newDoc IsNot Nothing Then
-                    corelApp = newApp
-                    corelDoc = newDoc
-                    MessageBox.Show(
-                        "Instance CorelDRAW baru sudah dibuka dan dokumen aktifnya dipakai sebagai target.",
-                        "Koneksi CorelDRAW", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                    Return
-                End If
-
-                ' Instance baru terbuka tetapi belum ada dokumen: beri tahu eksplisit
-                ' (jangan biarkan pengguna mengira dokumen lamanya yang diproses).
-                MessageBox.Show(
-                    "Instance CorelDRAW BARU sudah dibuka melalui COM, tetapi belum memiliki dokumen aktif." &
-                    Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                    "Buka file CDR di jendela CorelDRAW yang baru terbuka, lalu klik Muat ulang.",
-                    "Koneksi CorelDRAW", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                ComObjectHealth.TryRelease(newApp)
-                Throw New InvalidOperationException(
-                    "CorelDRAW baru dibuka melalui COM, tetapi belum memiliki dokumen aktif.")
-            Catch ex As Exception
-                lastError = ex
-            End Try
-        Next
-
-        Throw New InvalidOperationException(
-            "Tidak dapat mengakses dokumen CorelDRAW. Pastikan CorelDRAW 2022 terpasang dan dokumen CDR aktif. " &
-            "Detail: " & If(lastError Is Nothing, "tidak diketahui", lastError.Message), lastError)
-    End Sub
-
-    ''' <summary>Lepas referensi COM lama supaya tidak dianggap sebagai target yang masih hidup.</summary>
-    Private Sub ReleaseCorelReferences()
-        If corelDoc IsNot Nothing Then ComObjectHealth.TryRelease(corelDoc)
-        If corelApp IsNot Nothing Then ComObjectHealth.TryRelease(corelApp)
-        corelDoc = Nothing
-        corelApp = Nothing
-    End Sub
-
-    ''' <summary>Identitas instance + dokumen aktif saat ini (late bound, aman gagal).</summary>
-    Private Function CurrentIdentity() As DocumentIdentity
-        Return DocumentIdentity.FromDocument(corelDoc, DocumentIdentity.InstanceTokenFor(corelApp))
+        Return MessageBox.Show(question, "Koneksi CorelDRAW", MessageBoxButtons.YesNo,
+                               MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) = DialogResult.Yes
     End Function
 
-    ''' <summary>
-    ''' Pastikan target masih dokumen yang sama seperti saat daftar halaman dimuat.
-    ''' Temuan F: mencegah dokumen dari instance lain dianggap sebagai target yang sama.
-    ''' </summary>
-    Private Function EnsureSameDocument() As Boolean
-        If loadedIdentity Is Nothing Then
-            loadedIdentity = CurrentIdentity()
-            Return True
+    ''' <summary>Beri tahu pengguna tentang instance baru yang sudah dibuka.</summary>
+    Public Sub NotifyNewInstanceOpened(hasActiveDocument As Boolean) Implements ICorelPrompt.NotifyNewInstanceOpened
+        If hasActiveDocument Then
+            MessageBox.Show(
+                "Instance CorelDRAW baru sudah dibuka dan dokumen aktifnya dipakai sebagai target.",
+                "Koneksi CorelDRAW", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
         End If
-        Dim current As DocumentIdentity = CurrentIdentity()
-        If current.SameTarget(loadedIdentity) Then
-            ' Jumlah halaman boleh berubah (mis. halaman ditambah), cukup perbarui.
-            loadedIdentity = current
-            Return True
-        End If
+        MessageBox.Show(
+            "Instance CorelDRAW BARU sudah dibuka melalui COM, tetapi belum memiliki dokumen aktif." &
+            Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Buka file CDR di jendela CorelDRAW yang baru terbuka, lalu klik Muat ulang.",
+            "Koneksi CorelDRAW", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    End Sub
 
+    ''' <summary>Dokumen aktif berbeda dari dokumen saat daftar halaman dimuat (Temuan F).</summary>
+    Public Sub NotifyDocumentMismatch(loaded As DocumentIdentity,
+                                      current As DocumentIdentity) Implements ICorelPrompt.NotifyDocumentMismatch
         MessageBox.Show(
             "Dokumen aktif berbeda dari dokumen saat daftar halaman dimuat." &
             Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-            "Saat dimuat : " & loadedIdentity.Describe() & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Saat dimuat : " & loaded.Describe() & Microsoft.VisualBasic.Constants.vbCrLf &
             "Sekarang    : " & current.Describe() & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
             "Operasi dibatalkan agar tidak mengubah dokumen yang salah. Klik Muat ulang untuk memakai dokumen aktif.",
             "Dokumen target berubah", MessageBoxButtons.OK, MessageBoxIcon.Warning)
         statusLabel.Text = "Dokumen aktif berubah — klik Muat ulang."
-        Return False
+    End Sub
+
+    ''' <summary>Konfirmasi sebelum dokumen diubah (identitas + halaman + satuan).</summary>
+    Public Function ConfirmCopy(plan As CopyPlan) As Boolean Implements ICopyPrompt.ConfirmCopy
+        Dim confirmText As String =
+            "Dokumen     : " & plan.DocumentIdentity & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Halaman asal: " & plan.SourcePage & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Halaman tuju: " & String.Join(", ", plan.Targets.ToArray()) & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Satuan      : " & plan.UnitName &
+            " (dinormalkan ke mm, lalu dipulihkan)" & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Salin objek terpilih ke " & plan.TargetCount & " halaman? Objek sumber tidak diubah/dihapus."
+        Return MessageBox.Show(confirmText, "Konfirmasi salin objek", MessageBoxButtons.YesNo,
+                               MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) = DialogResult.Yes
     End Function
+
+    ''' <summary>Konfirmasi lanjut tanpa grup undo (Temuan C).</summary>
+    Public Function ConfirmContinueWithoutUndoGroup(reason As String) As Boolean Implements ICopyPrompt.ConfirmContinueWithoutUndoGroup
+        Dim question As String =
+            "Grup undo CorelDRAW tidak dapat dibuka:" & Microsoft.VisualBasic.Constants.vbCrLf &
+            reason & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Tanpa grup undo, satu Ctrl+Z TIDAK akan membatalkan seluruh operasi " &
+            "(harus dibatalkan per halaman)." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+            "Lanjutkan tanpa jaminan satu langkah Undo?"
+        Return MessageBox.Show(question, "Grup undo gagal dibuka", MessageBoxButtons.YesNo,
+                               MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) = DialogResult.Yes
+    End Function
+
+    ''' <summary>Satuan dokumen gagal dipulihkan (Temuan B) — wajib terlihat.</summary>
+    Public Sub NotifyUnitRestoreFailed(targetUnitName As String,
+                                       errorMessage As String) Implements ICopyPrompt.NotifyUnitRestoreFailed
+        MessageBox.Show("Satuan dokumen gagal dipulihkan ke " & targetUnitName &
+                        "." & Microsoft.VisualBasic.Constants.vbCrLf & errorMessage &
+                        Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
+                        "Ubah satuan dokumen kembali secara manual.",
+                        "Pemulihan satuan gagal", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Sub
+
+    ' --- IProgressSink: progres operasi panjang masuk ke status bar ----------
+
+    ''' <summary>Pesan progres dari service (teks sama seperti versi lama).</summary>
+    Public Sub Report(message As String) Implements IProgressSink.Report
+        statusLabel.Text = message
+    End Sub
+
+    ''' <summary>Biarkan Windows memproses antrean pesan; aman karena busy guard aktif.</summary>
+    Public Sub Pump() Implements IProgressSink.Pump
+        Application.DoEvents()
+    End Sub
 
     Private Sub LoadPages()
         ConnectToCorel()
+        ' Melempar pesan yang sama seperti versi lama bila tidak ada dokumen aktif.
+        _connection.EnsureDocument()
         pagesList.Items.Clear()
-        corelDoc = corelApp.ActiveDocument
-        If corelDoc Is Nothing Then
-            Throw New InvalidOperationException("Tidak ada dokumen aktif di CorelDRAW. Buka file CDR lalu klik Muat ulang.")
-        End If
 
         ' Temuan F: simpan identitas dokumen + instance aktif. Dipakai sebelum
         ' operasi yang mengubah dokumen dan ditampilkan ke pengguna.
-        loadedIdentity = CurrentIdentity()
+        Dim loadedIdentity As DocumentIdentity = _connection.RememberLoadedIdentity()
 
-        sourcePageIndex = CInt(corelDoc.ActivePage.Index)
+        sourcePageIndex = CInt(_connection.Document.ActivePage.Index)
         sourceLabel.Text = "Dokumen: " & loadedIdentity.Describe() &
                            " | Halaman aktif: " & sourcePageIndex &
                            " | Pilih objek sumber sebelum menjalankan Copy."
-        For i As Integer = 1 To CInt(corelDoc.Pages.Count)
+        For i As Integer = 1 To CInt(_connection.Document.Pages.Count)
             Dim caption = "Halaman " & i
             If i = sourcePageIndex Then caption &= " (AKTIF)"
             Dim itemIndex = pagesList.Items.Add(New PageItem(i, caption))
@@ -651,21 +608,14 @@ End Sub
     ''' <summary>
     ''' Menyalin objek terpilih dari halaman sumber ke halaman tujuan.
     '''
-    ''' Audit reliabilitas — yang diperbaiki di sini:
-    '''   A. Verifikasi copy: status dipisah Verified / Partial / Failed, geometri
-    '''      sumber dibandingkan dengan OBJEK HASIL PASTE (z-order atas atau
-    '''      selection setelah paste), bukan shape terbawah pada layer.
-    '''   B. Normalisasi satuan: satuan asli wajib terbaca; bila penyetelan mm
-    '''      gagal dipakai konversi eksplisit; pemulihan di Finally dan
-    '''      kegagalannya dilaporkan.
-    '''   C. Undo grouping: kegagalan BeginCommandGroup dilaporkan dan pengguna
-    '''      diminta konfirmasi; EndCommandGroup hanya dipanggil bila group terbuka.
-    '''   F. Identitas dokumen + jumlah halaman ditampilkan sebelum mengubah dokumen.
+    ''' Seluruh pipeline (validasi target, normalisasi satuan, grup undo, paste +
+    ''' verifikasi geometri) ada di CopyService. Form hanya:
+    '''   - mengumpulkan halaman yang dicentang,
+    '''   - menyediakan dialog konfirmasi/peringatan lewat ICopyPrompt,
+    '''   - menampilkan laporan hasil.
     ''' Objek sumber tidak pernah dihapus/diubah, dan tidak ada fallback Delete.
     ''' </summary>
     Private Sub CopyClickedCore()
-        Dim stopwatch As Stopwatch = Stopwatch.StartNew()
-
         Dim targets As New List(Of Integer)()
         For Each obj As Object In pagesList.CheckedItems
             Dim p = DirectCast(obj, PageItem)
@@ -676,236 +626,83 @@ End Sub
             Return
         End If
 
-        ' Status dokumen yang wajib dipulihkan (Temuan B & C).
-        Dim unitScope As New DocumentUnitScope(CDR_UNIT_MM)
-        Dim undoGuard As New UndoGroupGuard("Salin objek ke halaman")
-        Dim summary As New CopyRunSummary()
-        Dim sourcePageToRestore As Integer = -1
-        Dim fatalError As Exception = Nothing
-        Dim identityText As String = ""
+        Dim result As CopyServiceResult = _copyService.Run(sourcePageIndex, targets.ToArray())
+        RenderCopyResult(result)
+    End Sub
 
-        Try
-            ConnectToCorel()
-            If Not EnsureSameDocument() Then Return
-            identityText = loadedIdentity.Describe()
+    ''' <summary>
+    ''' Terjemahkan CopyServiceResult menjadi status bar + dialog, dengan teks
+    ''' yang sama seperti sebelum refactor. Setiap alasan batal punya pesannya
+    ''' sendiri (tidak ada kegagalan yang ditelan).
+    ''' </summary>
+    Private Sub RenderCopyResult(result As CopyServiceResult)
+        If result Is Nothing Then Return
 
-            Dim actualSourcePage As Integer = CInt(corelDoc.ActivePage.Index)
-            If actualSourcePage <> sourcePageIndex Then
-                MessageBox.Show("Halaman aktif berubah. Klik Muat Ulang dan ulangi.", "Halaman sumber berubah", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Select Case result.AbortReason
+            Case CopyAbortReason.NoTargetPages
+                MessageBox.Show("Centang setidaknya satu halaman tujuan selain halaman sumber.", "Corel Page Copier", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return
-            End If
-            sourcePageToRestore = actualSourcePage
 
-            Dim documentPageCount As Integer = CInt(corelDoc.Pages.Count)
-            Dim validatedTargets As New List(Of Integer)()
-            For Each pageIndex In targets
-                If pageIndex < 1 OrElse pageIndex > documentPageCount Then
-                    summary.Warnings.Add("Halaman " & pageIndex & ": indeks halaman tidak valid — dilewati.")
-                ElseIf pageIndex = actualSourcePage Then
-                    summary.Warnings.Add("Halaman " & pageIndex & ": halaman sumber tidak boleh menjadi tujuan — dilewati.")
-                ElseIf Not validatedTargets.Contains(pageIndex) Then
-                    validatedTargets.Add(pageIndex)
-                End If
-            Next
-            If validatedTargets.Count = 0 Then
+            Case CopyAbortReason.NoValidTargets
                 MessageBox.Show("Tidak ada halaman tujuan yang valid." & Microsoft.VisualBasic.Constants.vbCrLf &
-                                String.Join(Microsoft.VisualBasic.Constants.vbCrLf, summary.Warnings.ToArray()),
+                                result.AbortDetail,
                                 "Validasi tujuan", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return
-            End If
 
-            Dim selection As Object = Nothing
-            Try
-                selection = corelApp.ActiveSelectionRange
-            Catch
-                selection = Nothing
-            End Try
-            If selection Is Nothing OrElse CInt(selection.Count) = 0 Then
+            Case CopyAbortReason.NoSelection
                 MessageBox.Show("Pilih objek pada halaman sumber terlebih dahulu.", "Tidak ada seleksi", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return
-            End If
 
-            ' --- Temuan B: baca satuan asli SEBELUM menyentuh dokumen ----------
-            Try
-                unitScope.MarkOriginalKnown(CInt(corelDoc.Unit))
-            Catch ex As Exception
-                unitScope.MarkOriginalUnknown(ex.Message)
-            End Try
-            If Not unitScope.OriginalUnitKnown Then
-                MessageBox.Show(unitScope.BlockingReason, "Satuan dokumen tidak terbaca",
+            Case CopyAbortReason.UnitUnreadable
+                MessageBox.Show(result.AbortDetail, "Satuan dokumen tidak terbaca",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
                 statusLabel.Text = "Copy dibatalkan: satuan dokumen tidak terbaca."
                 Return
-            End If
 
-            ' --- Temuan F: identitas dokumen + halaman ditampilkan dulu --------
-            Dim confirmText As String =
-                "Dokumen     : " & identityText & Microsoft.VisualBasic.Constants.vbCrLf &
-                "Halaman asal: " & actualSourcePage & Microsoft.VisualBasic.Constants.vbCrLf &
-                "Halaman tuju: " & String.Join(", ", validatedTargets.ToArray()) & Microsoft.VisualBasic.Constants.vbCrLf &
-                "Satuan      : " & DocumentUnits.UnitName(unitScope.OriginalUnit) &
-                " (dinormalkan ke mm, lalu dipulihkan)" & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                "Salin objek terpilih ke " & validatedTargets.Count & " halaman? Objek sumber tidak diubah/dihapus."
-            If MessageBox.Show(confirmText, "Konfirmasi salin objek", MessageBoxButtons.YesNo,
-                               MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
-                statusLabel.Text = "Copy dibatalkan oleh pengguna."
-                Return
-            End If
-
-            ' --- Temuan B: normalisasi satuan --------------------------------
-            Try
-                corelDoc.Unit = unitScope.TargetUnit
-                unitScope.MarkChangeApplied()
-            Catch ex As Exception
-                unitScope.MarkChangeFailed(ex.Message)
-            End Try
-            If Not unitScope.CanVerifyInMillimeters Then
-                MessageBox.Show(unitScope.BlockingReason, "Satuan dokumen tidak dapat dinormalkan",
+            Case CopyAbortReason.UnitNotNormalizable
+                MessageBox.Show(result.AbortDetail, "Satuan dokumen tidak dapat dinormalkan",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
                 statusLabel.Text = "Copy dibatalkan: satuan dokumen tidak dapat dinormalkan."
                 Return
-            End If
-            Dim unitFactor As Double = unitScope.MeasurementFactorMm
 
-            ' Ukur objek SUMBER (gabungan shape range) sebagai acuan verifikasi.
-            ' Konversi ke mm dilakukan di CopyVerification.VerifyPasted.
-            Dim sourceSet As MeasuredShapeSet = CopyMeasurement.MeasureSelection(selection)
+            Case CopyAbortReason.UserCancelled
+                statusLabel.Text = "Copy dibatalkan oleh pengguna."
+                Return
 
-            ' --- Temuan C: grup undo ----------------------------------------
-            undoGuard.MarkBeginAttempted()
-            Try
-                corelDoc.BeginCommandGroup(undoGuard.Name)
-                undoGuard.MarkBeginSucceeded()
-            Catch ex As Exception
-                undoGuard.MarkBeginFailed(ex.Message)
-            End Try
-            If undoGuard.BeginFailed Then
-                Dim question As String =
-                    "Grup undo CorelDRAW tidak dapat dibuka:" & Microsoft.VisualBasic.Constants.vbCrLf &
-                    undoGuard.BeginError & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                    "Tanpa grup undo, satu Ctrl+Z TIDAK akan membatalkan seluruh operasi " &
-                    "(harus dibatalkan per halaman)." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                    "Lanjutkan tanpa jaminan satu langkah Undo?"
-                If MessageBox.Show(question, "Grup undo gagal dibuka", MessageBoxButtons.YesNo,
-                                   MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
-                    summary.Warnings.Add(undoGuard.Describe())
-                    statusLabel.Text = "Copy dibatalkan: grup undo tidak tersedia."
-                    Return
-                End If
-                summary.Warnings.Add(undoGuard.Describe())
-            End If
+            Case CopyAbortReason.UndoGroupDeclined
+                statusLabel.Text = "Copy dibatalkan: grup undo tidak tersedia."
+                Return
 
-            ' Objek sumber TIDAK PERNAH dihapus sebagai bagian dari validasi.
-            selection.Copy()
+            Case CopyAbortReason.DocumentChanged
+                ' Pesan + status sudah ditampilkan oleh NotifyDocumentMismatch.
+                Return
 
-            For targetPosition As Integer = 0 To validatedTargets.Count - 1
-                Dim pageIndex As Integer = validatedTargets(targetPosition)
-                statusLabel.Text = "Copy progres: " & (targetPosition + 1) & "/" & validatedTargets.Count &
-                                   " — halaman tujuan " & pageIndex & "."
-                Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
-                Try
-                    Dim destination As Object = corelDoc.Pages(pageIndex)
-                    destination.Activate()
-                    Dim layer As Object = destination.ActiveLayer
-                    Dim layerShapes As Object = layer.Shapes
-                    Dim beforeCount As Integer = CInt(layerShapes.Count)
-                    layer.Paste()
-                    Dim afterCount As Integer = CInt(layerShapes.Count)
-                    Dim added As Integer = afterCount - beforeCount
+            Case CopyAbortReason.SourcePageChanged
+                MessageBox.Show("Halaman aktif berubah. Klik Muat Ulang dan ulangi.", "Halaman sumber berubah", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return
+        End Select
 
-                    Dim pastedSelection As Object = Nothing
-                    Try
-                        pastedSelection = corelApp.ActiveSelectionRange
-                    Catch
-                        pastedSelection = Nothing
-                    End Try
-
-                    ' Temuan A: ukur objek hasil paste yang BENAR (bukan shape terbawah),
-                    ' lalu verifikasi lewat satu fungsi yang juga diuji unit.
-                    Dim pastedSet As MeasuredShapeSet = CopyMeasurement.MeasurePasted(pastedSelection, layerShapes, added)
-                    Dim verification As CopyVerificationResult = CopyVerification.VerifyPasted(
-                        sourceSet, pastedSet, added, unitFactor, GEOMETRY_TOLERANCE_MM)
-                    summary.Add(pageIndex, verification.Status, verification.Reason)
-                Catch pageEx As Exception
-                    summary.Add(pageIndex, CopyVerifyStatus.Failed,
-                                pageEx.GetType().Name & ": " & pageEx.Message)
-                End Try
-            Next
-        Catch ex As Exception
-            fatalError = ex
-        Finally
-            ' --- Temuan C: EndCommandGroup HANYA bila group benar-benar terbuka ---
-            If undoGuard.ShouldCallEnd Then
-                Try
-                    corelDoc.EndCommandGroup()
-                    undoGuard.MarkEndSucceeded()
-                Catch ex As Exception
-                    undoGuard.MarkEndFailed(ex.Message)
-                End Try
-            End If
-
-            ' --- Temuan B: pulihkan satuan asli, laporkan bila gagal ------------
-            If unitScope.RestoreRequired Then
-                Try
-                    corelDoc.Unit = unitScope.OriginalUnit
-                    unitScope.MarkRestored()
-                Catch ex As Exception
-                    unitScope.MarkRestoreFailed(ex.Message)
-                End Try
-            End If
-
-            If sourcePageToRestore > 0 Then
-                Try
-                    corelDoc.Pages(sourcePageToRestore).Activate()
-                Catch ex As Exception
-                    summary.Warnings.Add("Halaman sumber tidak dapat diaktifkan kembali: " & ex.Message)
-                End Try
-            End If
-        End Try
-
-        ' ---- Laporan dibuat SETELAH Finally supaya kegagalan pemulihan ikut
-        ' ---- dilaporkan (Temuan B & C) dan tidak mungkin disembunyikan.
-        If undoGuard.HasProblem Then summary.Warnings.Add(undoGuard.Describe())
-        If unitScope.RestoreFailed Then
-            summary.Warnings.Add("PEMULIHAN SATUAN DOKUMEN GAGAL (" & unitScope.RestoreError &
-                                 "). Satuan dokumen kemungkinan tetap mm — ubah manual di CorelDRAW.")
-            MessageBox.Show("Satuan dokumen gagal dipulihkan ke " & DocumentUnits.UnitName(unitScope.OriginalUnit) &
-                            "." & Microsoft.VisualBasic.Constants.vbCrLf & unitScope.RestoreError &
-                            Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                            "Ubah satuan dokumen kembali secara manual.",
-                            "Pemulihan satuan gagal", MessageBoxButtons.OK, MessageBoxIcon.Error)
-        End If
-
-        Dim elapsed As Double = stopwatch.Elapsed.TotalSeconds
-
-        If fatalError IsNot Nothing Then
-            summary.Warnings.Add("Operasi dihentikan oleh kesalahan: " & fatalError.GetType().Name & ": " & fatalError.Message)
-        End If
-
-        statusLabel.Text = summary.Headline(elapsed)
-        If summary.TotalCount = 0 Then
+        ' ---- Laporan (dibuat setelah pemulihan satuan agar kegagalannya ikut) ----
+        statusLabel.Text = result.Headline
+        If result.Summary.TotalCount = 0 Then
             MessageBox.Show("Copy tidak berjalan." & Microsoft.VisualBasic.Constants.vbCrLf &
-                            String.Join(Microsoft.VisualBasic.Constants.vbCrLf, summary.Warnings.ToArray()),
+                            String.Join(Microsoft.VisualBasic.Constants.vbCrLf, result.Warnings.ToArray()),
                             "Copy tidak berjalan", MessageBoxButtons.OK, MessageBoxIcon.Error)
             Return
         End If
 
-        Dim report As String = summary.BuildReport(identityText, unitScope.Describe(), undoGuard.Describe(), elapsed)
-        MessageBox.Show(report, "Hasil Corel Page Copier", MessageBoxButtons.OK,
-                        If(summary.AllVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
+        MessageBox.Show(result.BuildReport(), "Hasil Corel Page Copier", MessageBoxButtons.OK,
+                        If(result.AllVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
     End Sub
 
     ' ========================================================================
     '  AUTO SELECT
-    '  Klasifikasi objek dipisah ke ShapeClassifier (murni), penelusuran pohon
-    '  ke ShapeScanner (murni), navigasi hasil ke MatchNavigator (murni).
-    '  Bagian di bawah ini hanya menjembatani COM + UI.
+    '  Klasifikasi objek (ShapeClassifier), penelusuran pohon (ShapeScanner),
+    '  navigasi hasil (MatchNavigator) tetap murni di modul masing-masing.
+    '  Orkestrasi — pindai semua halaman, snapshot navigasi, terapkan seleksi,
+    '  verifikasi jumlah terpilih — ada di AutoSelectService.
+    '  Form hanya menyusun laporan & status bar.
     ' ========================================================================
-
-    Private ReadOnly matchNavigator As New MatchNavigator()
-
-    ''' <summary>Hasil pemindaian terakhir per halaman (untuk laporan & navigasi).</summary>
-    Private ReadOnly lastScanByPage As New Dictionary(Of Integer, ShapeScanResult)()
 
     Private Sub AutoSelectClicked(sender As Object, e As EventArgs)
         If Not TryBeginOperation("Auto Select") Then Return
@@ -918,21 +715,11 @@ End Sub
 
     ''' <summary>
     ''' Pilih otomatis objek berdasarkan kategori & cakupan halaman.
-    '''
-    ''' Audit Auto Select — yang diperbaiki:
-    '''   1. Kategori "vektor" tidak lagi "apa pun yang bukan teks/bitmap/grup"
-    '''      (dulu ikut memilih garis bantu/OLE); definisinya eksplisit di
-    '''      ShapeClassifier.
-    '''   2. Status kurva dibaca dari Curve.Closed; bila tidak terbaca objek TIDAK
-    '''      dianggap kurva terbuka dan kegagalannya dilaporkan.
-    '''   3. Grup bersarang: batas kedalaman + kegagalan baca anak dicatat.
-    '''   4. PowerClip: isi container dipindai lewat jalur khusus; hit di dalamnya
-    '''      memilih container (bukan objek tersembunyi yang tak bisa dipilih).
-    '''   5. Watermark tidak pernah terpilih (termasuk di dalam grup/PowerClip).
-    '''   6. Navigasi memakai snapshot kategori/cakupan saat pemindaian.
-    '''   7. Seleksi kosong: seleksi lama TIDAK dibersihkan (tidak ada operasi
-    '''      destruktif saat tidak ada hasil).
-    '''   8. Jumlah objek terpilih divalidasi ulang dari CorelDRAW.
+    ''' Aturan keselamatan yang dipertahankan:
+    '''   - tidak ada objek yang dihapus/diubah,
+    '''   - seleksi lama tidak dibersihkan bila tidak ada hasil,
+    '''   - jumlah objek terpilih diverifikasi ulang dari CorelDRAW,
+    '''   - navigasi memakai snapshot kategori/cakupan saat pemindaian.
     ''' </summary>
     Private Sub AutoSelectClickedCore()
         Dim scanTimer As Stopwatch = Stopwatch.StartNew()
@@ -941,41 +728,24 @@ End Sub
 
         ' Sesi sebelumnya dibatalkan lebih dulu supaya kegagalan di tengah jalan
         ' tidak meninggalkan daftar halaman yang setengah jadi.
-        matchNavigator.Reset()
-        lastScanByPage.Clear()
+        _autoSelect.Reset()
 
         Try
             ConnectToCorel()
             If Not EnsureSameDocument() Then Return
 
-            Dim pageCount As Integer = CInt(corelDoc.Pages.Count)
-            Dim originalPage As Integer = CInt(corelDoc.ActivePage.Index)
+            Dim pageCount As Integer = _autoSelect.DocumentPageCount()
+            Dim originalPage As Integer = CInt(_connection.Document.ActivePage.Index)
 
             If Not allPages Then
                 ScanSinglePage(originalPage, category, scanTimer)
                 Return
             End If
 
-            ' --- Pindai semua halaman --------------------------------
-            Dim pagesWithMatches As New List(Of Integer)()
-            Dim totalMatches As Integer = 0
-            Dim totalDiagnostics As Integer = 0
+            ' --- Pindai semua halaman (progres masuk ke status bar lewat sink) ---
+            Dim scanReport As AutoSelectScanReport = _autoSelect.ScanAllPages(category)
 
-            For pageIndex As Integer = 1 To pageCount
-                statusLabel.Text = "Memindai progres: halaman " & pageIndex & "/" & pageCount &
-                                   " | total objek cocok sementara: " & totalMatches & "."
-                Application.DoEvents()   ' aman: flag busy + kontrol nonaktif mencegah re-entrancy
-
-                Dim scan As ShapeScanResult = ScanPageForUi(pageIndex, category)
-                If scan Is Nothing Then Continue For
-
-                lastScanByPage(pageIndex) = scan
-                totalMatches += scan.MatchCount
-                totalDiagnostics += scan.Diagnostics.Count
-                If scan.MatchCount > 0 Then pagesWithMatches.Add(pageIndex)
-            Next
-
-            If pagesWithMatches.Count = 0 Then
+            If Not scanReport.HasMatches Then
                 ' Tidak ada hasil: JANGAN menyentuh seleksi yang ada.
                 statusLabel.Text = "Auto Select: tidak ada objek cocok (" &
                                    ShapeClassifier.CategoryLabel(category) & ")."
@@ -988,69 +758,45 @@ End Sub
                 Return
             End If
 
-            ' Snapshot kategori + cakupan ikut disimpan untuk navigasi.
-            matchNavigator.Start(category, allPages, pagesWithMatches)
-
             Dim selectReport As SelectionOutcome = SelectPageAtCurrentMatch(category)
 
-            Dim details As New List(Of String)()
-            For Each pageIndex As Integer In pagesWithMatches
-                Dim scan As ShapeScanResult = lastScanByPage(pageIndex)
-                details.Add("Halaman " & pageIndex.ToString() & ": " & scan.MatchCount.ToString() &
-                            " objek (" & scan.DistinctTargetCount.ToString() & " target seleksi)")
+            Dim text As New StringBuilder()
+            text.AppendLine("Pemindaian semua halaman selesai.")
+            text.AppendLine("Kategori       : " & ShapeClassifier.CategoryLabel(category))
+            text.AppendLine("Definisi       : " & ShapeClassifier.CategoryHelp(category))
+            text.AppendLine("Total objek    : " & scanReport.TotalMatches & " (" & scanReport.PagesWithMatches.Count & " halaman memiliki hasil)")
+            text.AppendLine("Halaman dipindai: " & scanReport.PagesScanned & " dari " & pageCount)
+            text.AppendLine("Durasi         : " & scanReport.DurationSeconds.ToString("0.0") & " detik")
+            text.AppendLine()
+            text.AppendLine("Per halaman:")
+            For Each line As String In scanReport.DescribePages()
+                text.AppendLine("  " & line)
             Next
-            For Each pageIndex As Integer In lastScanByPage.Keys
-                If Not pagesWithMatches.Contains(pageIndex) Then
-                    details.Add("Halaman " & pageIndex.ToString() & ": 0 objek")
-                End If
-            Next
-            details.Sort()
-
-            Dim report As New StringBuilder()
-            report.AppendLine("Pemindaian semua halaman selesai.")
-            report.AppendLine("Kategori       : " & ShapeClassifier.CategoryLabel(category))
-            report.AppendLine("Definisi       : " & ShapeClassifier.CategoryHelp(category))
-            report.AppendLine("Total objek    : " & totalMatches & " (" & pagesWithMatches.Count & " halaman memiliki hasil)")
-            report.AppendLine("Halaman dipindai: " & lastScanByPage.Count & " dari " & pageCount)
-            report.AppendLine("Durasi         : " & scanTimer.Elapsed.TotalSeconds.ToString("0.0") & " detik")
-            report.AppendLine()
-            report.AppendLine("Per halaman:")
-            For Each line As String In details
-                report.AppendLine("  " & line)
-            Next
-            report.AppendLine()
-            report.AppendLine(selectReport.Describe())
-            If totalDiagnostics > 0 Then
-                report.AppendLine()
-                report.AppendLine("Catatan pemindaian (" & totalDiagnostics & "):")
-                For Each pageIndex As Integer In lastScanByPage.Keys
-                    Dim diagnostics As String = lastScanByPage(pageIndex).DescribeDiagnostics()
-                    If Not String.IsNullOrEmpty(diagnostics) Then
-                        report.AppendLine("  Halaman " & pageIndex.ToString() & ":")
-                        report.Append(diagnostics)
-                    End If
-                Next
+            text.AppendLine()
+            text.AppendLine(selectReport.Describe())
+            If scanReport.TotalDiagnostics > 0 Then
+                text.AppendLine()
+                text.AppendLine("Catatan pemindaian (" & scanReport.TotalDiagnostics & "):")
+                text.Append(scanReport.DescribeDiagnostics())
             End If
-            report.AppendLine()
-            report.AppendLine("Navigasi: tombol ""Pilih hasil berikutnya"" berpindah halaman hasil " &
-                              "sesuai snapshot pemindaian ini dan berhenti di hasil terakhir.")
+            text.AppendLine()
+            text.AppendLine("Navigasi: tombol ""Pilih hasil berikutnya"" berpindah halaman hasil " &
+                            "sesuai snapshot pemindaian ini dan berhenti di hasil terakhir.")
 
-            statusLabel.Text = "Pindai semua halaman: " & totalMatches & " objek; " &
-                               pagesWithMatches.Count & " halaman cocok (" & scanTimer.Elapsed.TotalSeconds.ToString("0.0") & " detik)."
-            MessageBox.Show(report.ToString(), "Auto Select — Semua Halaman", MessageBoxButtons.OK,
+            statusLabel.Text = "Pindai semua halaman: " & scanReport.TotalMatches & " objek; " &
+                               scanReport.PagesWithMatches.Count & " halaman cocok (" & scanReport.DurationSeconds.ToString("0.0") & " detik)."
+            MessageBox.Show(text.ToString(), "Auto Select — Semua Halaman", MessageBoxButtons.OK,
                             If(selectReport.SelectionVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
         Catch ex As Exception
-            matchNavigator.Reset()
-            lastScanByPage.Clear()
+            _autoSelect.Reset()
             ShowError("Auto Select gagal: " & ex.Message)
         End Try
     End Sub
 
     ''' <summary>Cakupan "Halaman aktif": pindai satu halaman lalu pilih hasilnya.</summary>
     Private Sub ScanSinglePage(pageIndex As Integer, category As ShapeCategory, scanTimer As Stopwatch)
-        Dim scan As ShapeScanResult = ScanPageForUi(pageIndex, category)
+        Dim scan As ShapeScanResult = _autoSelect.ScanSinglePage(pageIndex, category)
         If scan Is Nothing Then Return
-        lastScanByPage(pageIndex) = scan
 
         If scan.MatchCount = 0 Then
             ' Tidak ada hasil -> seleksi lama dibiarkan apa adanya.
@@ -1064,92 +810,50 @@ End Sub
             Return
         End If
 
-        matchNavigator.Start(category, False, New Integer() {pageIndex})
         Dim outcome As SelectionOutcome = SelectPageAtCurrentMatch(category)
 
-        Dim report As New StringBuilder()
-        report.AppendLine("Auto Select — halaman " & pageIndex.ToString())
-        report.AppendLine("Kategori : " & ShapeClassifier.CategoryLabel(category))
-        report.AppendLine("Definisi : " & ShapeClassifier.CategoryHelp(category))
-        report.AppendLine()
-        report.AppendLine(scan.DescribeHits(20))
-        report.AppendLine()
-        report.AppendLine(outcome.Describe())
+        Dim text As New StringBuilder()
+        text.AppendLine("Auto Select — halaman " & pageIndex.ToString())
+        text.AppendLine("Kategori : " & ShapeClassifier.CategoryLabel(category))
+        text.AppendLine("Definisi : " & ShapeClassifier.CategoryHelp(category))
+        text.AppendLine()
+        text.AppendLine(scan.DescribeHits(20))
+        text.AppendLine()
+        text.AppendLine(outcome.Describe())
         Dim diagnostics As String = scan.DescribeDiagnostics()
         If Not String.IsNullOrEmpty(diagnostics) Then
-            report.AppendLine()
-            report.AppendLine("Catatan pemindaian:")
-            report.Append(diagnostics)
+            text.AppendLine()
+            text.AppendLine("Catatan pemindaian:")
+            text.Append(diagnostics)
         End If
-        report.AppendLine()
-        report.AppendLine("Durasi: " & scanTimer.Elapsed.TotalSeconds.ToString("0.0") & " detik.")
+        text.AppendLine()
+        text.AppendLine("Durasi: " & scanTimer.Elapsed.TotalSeconds.ToString("0.0") & " detik.")
 
         statusLabel.Text = "Auto Select: " & outcome.SelectionVerifiedCount & " objek terpilih pada halaman " &
                            pageIndex.ToString() & " (" & scan.MatchCount & " objek cocok)."
-        MessageBox.Show(report.ToString(), "Auto Select", MessageBoxButtons.OK,
+        MessageBox.Show(text.ToString(), "Auto Select", MessageBoxButtons.OK,
                         If(outcome.SelectionVerified, MessageBoxIcon.Information, MessageBoxIcon.Warning))
     End Sub
 
     ''' <summary>
-    ''' Pindai satu halaman lewat adapter COM. Mengembalikan Nothing bila objek
-    ''' halaman tidak dapat diakses (dicatat ke status).
-    ''' </summary>
-    Private Function ScanPageForUi(pageIndex As Integer, category As ShapeCategory) As ShapeScanResult
-        Dim page As Object
-        Try
-            page = corelDoc.Pages(pageIndex)
-        Catch ex As Exception
-            statusLabel.Text = "Halaman " & pageIndex.ToString() & " tidak dapat diakses: " & ex.Message
-            Return Nothing
-        End Try
-
-        Dim rootNodes As List(Of IShapeNode)
-        Try
-            rootNodes = ShapeNodeAdapter.WrapCollection(page.Shapes)
-        Catch ex As Exception
-            Dim failed As New ShapeScanResult()
-            failed.PageIndex = pageIndex
-            failed.Category = category
-            failed.Diagnostics.Add("Objek halaman tidak dapat dibaca: " & ex.GetType().Name & ": " & ex.Message)
-            Return failed
-        End Try
-
-        Dim options As ShapeScanOptions = ShapeScanOptions.ForCategory(category)
-        options.MaxDepth = ShapeNodeAdapter.MaxDepth
-        Return ShapeScanner.Scan(rootNodes, pageIndex, options)
-    End Function
-
-    ''' <summary>
     ''' Pilih objek pada halaman hasil yang sedang aktif di navigator.
-    ''' Selalu memakai kategori SNAPSHOT, bukan pilihan ComboBox saat ini.
+    ''' Kategori SNAPSHOT dipakai (bukan pilihan ComboBox saat ini).
     ''' </summary>
     Private Function SelectPageAtCurrentMatch(scanCategory As ShapeCategory) As SelectionOutcome
-        If Not matchNavigator.HasResults Then Return SelectionOutcome.NotRun("Belum ada hasil pemindaian.")
-
-        Dim pageIndex As Integer = matchNavigator.CurrentPage
-        If pageIndex <= 0 Then Return SelectionOutcome.NotRun("Posisi hasil tidak valid.")
-
-        Dim scan As ShapeScanResult = Nothing
-        If Not lastScanByPage.TryGetValue(pageIndex, scan) Then
-            ' Hasil lama tidak tersedia (mis. dokumen berubah): pindai ulang
-            ' dengan kategori snapshot agar jumlahnya konsisten.
-            scan = ScanPageForUi(pageIndex, scanCategory)
-            If scan Is Nothing Then Return SelectionOutcome.NotRun("Halaman " & pageIndex.ToString() & " tidak dapat diakses.")
-            lastScanByPage(pageIndex) = scan
-        End If
-
-        Try
-            corelDoc.Pages(pageIndex).Activate()
-        Catch ex As Exception
-            Return SelectionOutcome.NotRun("Halaman " & pageIndex.ToString() & " tidak dapat diaktifkan: " & ex.Message)
-        End Try
-
-        Dim outcome As SelectionOutcome = ApplySelection(scan, expectedPageIndex:=pageIndex)
-        statusLabel.Text = "Hasil " & matchNavigator.PositionLabel & " | halaman " & pageIndex.ToString() &
-                           " | " & outcome.SelectionVerifiedCount & " objek terpilih | " &
-                           ShapeClassifier.CategoryLabel(scanCategory) & "."
+        Dim outcome As SelectionOutcome = _autoSelect.SelectPageAtCurrentMatch(scanCategory)
+        UpdateStatusForCurrentMatch(outcome)
         Return outcome
     End Function
+
+    ''' <summary>Status bar untuk hasil navigasi saat ini (teks sama seperti versi lama).</summary>
+    Private Sub UpdateStatusForCurrentMatch(outcome As SelectionOutcome)
+        If outcome Is Nothing Then Return
+        Dim navigator As MatchNavigator = _autoSelect.Navigator
+        If Not navigator.HasResults Then Return
+        statusLabel.Text = "Hasil " & navigator.PositionLabel & " | halaman " & navigator.CurrentPage.ToString() &
+                           " | " & outcome.SelectionVerifiedCount & " objek terpilih | " &
+                           ShapeClassifier.CategoryLabel(navigator.Category) & "."
+    End Sub
 
     Private Sub NextMatchingPageClicked(sender As Object, e As EventArgs)
         If Not TryBeginOperation("Pindah hasil") Then Return
@@ -1169,7 +873,8 @@ End Sub
             ConnectToCorel()
             If Not EnsureSameDocument() Then Return
 
-            If Not matchNavigator.HasResults Then
+            Dim navigator As MatchNavigator = _autoSelect.Navigator
+            If Not navigator.HasResults Then
                 MessageBox.Show("Jalankan ""Select otomatis"" dengan cakupan ""Pindai semua halaman"" terlebih dahulu.",
                                 "Tidak ada hasil pemindaian", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return
@@ -1178,12 +883,7 @@ End Sub
             Dim categoryNow As ShapeCategory = ShapeClassifier.CategoryFromIndex(categoryBox.SelectedIndex)
             Dim allPagesNow As Boolean = (scopeBox.SelectedIndex = 1)
 
-            Dim pageCount As Integer = CInt(corelDoc.Pages.Count)
-            ' 'Step' adalah kata kunci VB -> pakai navStep. Lambda dijadikan variabel
-            ' agar tidak bergantung pada parsing lanjutan baris.
-            Dim pageExists As Func(Of Integer, Boolean) =
-                Function(pageIdx As Integer) pageIdx >= 1 AndAlso pageIdx <= pageCount
-            Dim navStep As NavigationStep = matchNavigator.MoveNext(categoryNow, allPagesNow, pageExists)
+            Dim navStep As NavigationStep = _autoSelect.MoveNext(categoryNow, allPagesNow)
 
             Select Case navStep
                 Case NavigationStep.StaleSnapshot
@@ -1193,8 +893,8 @@ End Sub
                     statusLabel.Text = "Pilihan kategori/cakupan berubah — jalankan Select otomatis lagi."
                     MessageBox.Show(
                         "Kategori atau cakupan diubah setelah pemindaian terakhir." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                        "Hasil pemindaian disimpan untuk: " & ShapeClassifier.CategoryLabel(matchNavigator.Category) &
-                        If(matchNavigator.AllPages, " (semua halaman)", " (halaman aktif)") & "." & Microsoft.VisualBasic.Constants.vbCrLf &
+                        "Hasil pemindaian disimpan untuk: " & ShapeClassifier.CategoryLabel(navigator.Category) &
+                        If(navigator.AllPages, " (semua halaman)", " (halaman aktif)") & "." & Microsoft.VisualBasic.Constants.vbCrLf &
                         "Pilihan sekarang: " & ShapeClassifier.CategoryLabel(categoryNow) &
                         If(allPagesNow, " (semua halaman)", " (halaman aktif)") & "." & Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
                         "Navigasi dihentikan agar hasil tidak melompat ke halaman yang salah. " &
@@ -1203,9 +903,9 @@ End Sub
                     Return
 
                 Case NavigationStep.AtEnd
-                    statusLabel.Text = "Navigasi selesai: hasil terakhir " & matchNavigator.PositionLabel &
-                                       ", halaman aktif " & CInt(corelDoc.ActivePage.Index).ToString() & "."
-                    MessageBox.Show("Anda sudah berada pada hasil terakhir (" & matchNavigator.PositionLabel &
+                    statusLabel.Text = "Navigasi selesai: hasil terakhir " & navigator.PositionLabel &
+                                       ", halaman aktif " & CInt(_connection.Document.ActivePage.Index).ToString() & "."
+                    MessageBox.Show("Anda sudah berada pada hasil terakhir (" & navigator.PositionLabel &
                                     "). Navigasi dihentikan dan tidak kembali ke hasil pertama.",
                                     "Hasil terakhir", MessageBoxButtons.OK, MessageBoxIcon.Information)
                     Return
@@ -1223,77 +923,18 @@ End Sub
                     Return
             End Select
 
-            Dim outcome As SelectionOutcome = SelectPageAtCurrentMatch(matchNavigator.Category)
-            If Not outcome.SelectionVerified Then
-                MessageBox.Show("Berpindah ke hasil " & matchNavigator.PositionLabel & ", tetapi seleksi tidak sepenuhnya berhasil:" &
+            Dim outcome As SelectionOutcome = _autoSelect.LastOutcome
+            UpdateStatusForCurrentMatch(outcome)
+            If outcome Is Nothing OrElse Not outcome.SelectionVerified Then
+                MessageBox.Show("Berpindah ke hasil " & navigator.PositionLabel & ", tetapi seleksi tidak sepenuhnya berhasil:" &
                                 Microsoft.VisualBasic.Constants.vbCrLf & Microsoft.VisualBasic.Constants.vbCrLf &
-                                outcome.Describe(), "Seleksi parsial", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                                If(outcome Is Nothing, "Hasil seleksi tidak tersedia.", outcome.Describe()),
+                                "Seleksi parsial", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             End If
         Catch ex As Exception
             ShowError("Gagal berpindah ke halaman cocok: " & ex.Message)
         End Try
     End Sub
-
-    ''' <summary>
-    ''' Terapkan seleksi untuk hasil pemindaian satu halaman.
-    ''' Aturan keselamatan:
-    '''   - Tidak ada target -> seleksi lama TIDAK disentuh.
-    '''   - Tidak ada fallback Delete; kegagalan ClearSelection membatalkan operasi.
-    '''   - Jumlah hasil dibaca ulang dari CorelDRAW (bukan sekadar hitungan
-    '''     pemanggilan AddToSelection yang tidak melempar).
-    ''' </summary>
-    Private Function ApplySelection(scan As ShapeScanResult, expectedPageIndex As Integer) As SelectionOutcome
-        If scan Is Nothing Then Return SelectionOutcome.NotRun("Hasil pemindaian tidak tersedia.")
-
-        Dim targets As List(Of Object) = scan.SelectionTargets()
-        If targets.Count = 0 Then
-            ' Penting: jangan ClearSelection saat kosong (tidak ada operasi destruktif).
-            Return SelectionOutcome.NotRun("Tidak ada target seleksi pada halaman " & expectedPageIndex.ToString() & ".")
-        End If
-
-        ' Tidak ada fallback Delete: kegagalan ClearSelection menghentikan operasi demi keselamatan.
-        Try
-            corelDoc.ClearSelection()
-        Catch ex As Exception
-            Throw New InvalidOperationException(
-                "Seleksi lama tidak dapat dibersihkan. Tidak ada objek yang dihapus; proses dibatalkan.", ex)
-        End Try
-
-        Dim outcome As New SelectionOutcome()
-        outcome.ExpectedCount = targets.Count
-        outcome.MatchCount = scan.MatchCount
-
-        For Each target As Object In targets
-            Try
-                target.AddToSelection()
-                outcome.AddedCalls += 1
-            Catch ex As Exception
-                outcome.Failures.Add("AddToSelection gagal: " & ex.GetType().Name & ": " & ex.Message)
-            End Try
-        Next
-
-        ' Validasi: hitung objek yang BENAR-BENAR terpilih di CorelDRAW.
-        Try
-            Dim selectionRange As Object = corelApp.ActiveSelectionRange
-            If selectionRange Is Nothing Then
-                outcome.ActualCount = 0
-            Else
-                outcome.ActualCount = CInt(selectionRange.Count)
-            End If
-            outcome.ActualCountKnown = True
-        Catch ex As Exception
-            outcome.ActualCountKnown = False
-            outcome.Failures.Add("Jumlah seleksi tidak dapat diverifikasi: " & ex.GetType().Name & ": " & ex.Message)
-        End Try
-
-        If outcome.ActualCountKnown AndAlso outcome.ActualCount <> outcome.ExpectedCount Then
-            outcome.Failures.Add("CorelDRAW melaporkan " & outcome.ActualCount & " objek terpilih, diharapkan " &
-                                 outcome.ExpectedCount & " (objek pada layer terkunci/grup tidak dapat dipilih).")
-        End If
-
-        outcome.CategoryLabel = ShapeClassifier.CategoryLabel(scan.Category)
-        Return outcome
-    End Function
 
     ''' <summary>
     ''' Buka dialog watermark. Halaman yang sedang dicentang diteruskan sebagai
@@ -1310,7 +951,7 @@ End Sub
 
         Try
             ConnectToCorel()
-            Using dlg As New WatermarkDialog(corelApp, selectedPages)
+            Using dlg As New WatermarkDialog(_connection.App, selectedPages)
                 dlg.ShowDialog(Me)
             End Using
             ' Dokumen mungkin berubah (halaman/layer baru) -> segarkan daftar.

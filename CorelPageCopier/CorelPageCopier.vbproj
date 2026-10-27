@@ -53,6 +53,11 @@
     <Compile Include="PdfProofValidator.vb" />
     <Compile Include="WatermarkPlacementCheck.vb" />
     <Compile Include="BatchRunTracker.vb" />
+    <Compile Include="ServicePorts.vb" />
+    <Compile Include="CorelComProbe.vb" />
+    <Compile Include="CorelConnectionService.vb" />
+    <Compile Include="CopyService.vb" />
+    <Compile Include="AutoSelectService.vb" />
   </ItemGroup>
   <ItemGroup>
     <!-- Logo bawaan untuk fitur watermark (dua varian warna, tertanam di EXE). -->

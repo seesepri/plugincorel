@@ -44,6 +44,9 @@ files = {
     "pdfvalidator": os.path.join(SRC, "PdfProofValidator.vb"),
     "placement": os.path.join(SRC, "WatermarkPlacementCheck.vb"),
     "batchtracker": os.path.join(SRC, "BatchRunTracker.vb"),
+    "connectionservice": os.path.join(SRC, "CorelConnectionService.vb"),
+    "copyservice": os.path.join(SRC, "CopyService.vb"),
+    "autoselectservice": os.path.join(SRC, "AutoSelectService.vb"),
 }
 
 TESTS = os.path.join(ROOT, "tests", "CorelPageCopier.RegressionTests")
@@ -70,6 +73,9 @@ tests_files = {
     "tests_placement": os.path.join(TESTS, "Tests", "WatermarkPlacementTests.vb"),
     "tests_logformat": os.path.join(TESTS, "Tests", "BatchLogFormatTests.vb"),
     "tests_batchrel": os.path.join(TESTS, "Tests", "BatchReliabilityTests.vb"),
+    "tests_connectionsvc": os.path.join(TESTS, "Tests", "CorelConnectionServiceTests.vb"),
+    "tests_copysvc": os.path.join(TESTS, "Tests", "CopyServiceTests.vb"),
+    "tests_autoselectsvc": os.path.join(TESTS, "Tests", "AutoSelectServiceTests.vb"),
 }
 
 failures = []
@@ -116,8 +122,15 @@ def main():
     engine = read("engine")
     vbproj = read("vbproj")
 
+    connection_service = read("connectionservice")
+    copy_service = read("copyservice")
+    autoselect_service = read("autoselectservice")
+    corel_probe = read_path(os.path.join(SRC, "CorelComProbe.vb"))
+
     copy_wrapper = method_body(program, "CopyClicked")
-    copy_body = method_body(program, "CopyClickedCore")   # isi sebenarnya (wrapper busy ada di atasnya)
+    # Refactor arsitektur: pipeline copy pindah dari CopierForm ke CopyService.
+    # Form hanya mengumpulkan halaman + menampilkan hasil (CopyClickedCore).
+    copy_body = method_body(copy_service, "Run")
     collect_body = method_body(program, "CollectMatchingShape")
     begin_body = method_body(program, "TryBeginOperation")
     end_body = method_body(program, "EndOperation")
@@ -125,14 +138,16 @@ def main():
 
     print("Temuan #1 — undo grouping pada Copy:")
     check("CopyClickedCore()" in copy_wrapper, "CopyClicked meneruskan ke CopyClickedCore")
-    check("BeginCommandGroup" in copy_body, "CopyClicked memanggil BeginCommandGroup")
-    check("EndCommandGroup" in copy_body, "CopyClicked memanggil EndCommandGroup")
+    check("BeginCommandGroup" in copy_body, "CopyService memanggil BeginCommandGroup")
+    check("EndCommandGroup" in copy_body, "CopyService memanggil EndCommandGroup")
     check(re.search(r"Finally[\s\S]*?EndCommandGroup", copy_body) is not None,
           "EndCommandGroup berada di blok Finally (selalu dieksekusi)")
-    begins = len(re.findall(r"\.BeginCommandGroup\s*\(", program))
-    ends = len(re.findall(r"\.EndCommandGroup\s*\(", program))
+    begins = len(re.findall(r"\.BeginCommandGroup\s*\(", copy_service))
+    ends = len(re.findall(r"\.EndCommandGroup\s*\(", copy_service))
     check(begins == ends and begins >= 1,
-          "jumlah pemanggilan BeginCommandGroup (%d) == EndCommandGroup (%d) di Program.vb" % (begins, ends))
+          "jumlah pemanggilan BeginCommandGroup (%d) == EndCommandGroup (%d) di CopyService.vb" % (begins, ends))
+    check("BeginCommandGroup" not in program and "EndCommandGroup" not in program,
+          "Program.vb tidak lagi memanggil grup undo COM langsung")
 
     print("Temuan #1 — undo grouping pada watermark:")
     check("BeginCommandGroup" in read("engine"), "WatermarkEngine memakai BeginCommandGroup")
@@ -183,7 +198,7 @@ def main():
     check("MatchesSnapshot" in nav, "snapshot kategori+cakupan mencegah lompat/ulang halaman")
 
     print("Auto Select — tidak ada operasi destruktif & seleksi diverifikasi:")
-    apply_body = method_body(program, "ApplySelection")
+    apply_body = method_body(autoselect_service, "ApplySelection")
     check(re.search(r"\.Delete\s*\(", apply_body) is None,
           "ApplySelection tidak memanggil Delete sebagai fallback")
     empty_at = apply_body.find("targets.Count = 0")
@@ -199,12 +214,11 @@ def main():
 
     print("Temuan #3 — normalisasi satuan dokumen:")
     units_src = read("units")
-    check("CDR_UNIT_MM" in program, "konstanta CDR_UNIT_MM (=3) didefinisikan")
-    check("New DocumentUnitScope(CDR_UNIT_MM)" in copy_body,
+    check("New DocumentUnitScope(WatermarkCdrConst.CdrMillimeter)" in copy_body,
           "satuan dinormalkan lewat DocumentUnitScope (state tercatat, bukan Try/Catch kosong)")
-    check("corelDoc.Unit = unitScope.TargetUnit" in copy_body, "satuan di-set ke mm sebelum operasi")
-    check("corelDoc.Unit = unitScope.OriginalUnit" in copy_body, "satuan asli dipulihkan")
-    check(re.search(r"Finally[\s\S]*?corelDoc\.Unit = unitScope\.OriginalUnit", copy_body) is not None,
+    check("document.Unit = unitScope.TargetUnit" in copy_body, "satuan di-set ke mm sebelum operasi")
+    check("document.Unit = unitScope.OriginalUnit" in copy_body, "satuan asli dipulihkan")
+    check(re.search(r"Finally[\s\S]*?document\.Unit = unitScope\.OriginalUnit", copy_body) is not None,
           "pemulihan satuan berada di blok Finally")
     check("MarkRestoreFailed" in copy_body and "unitScope.RestoreFailed" in copy_body,
           "kegagalan pemulihan satuan dilaporkan (tidak ditelan)")
@@ -212,7 +226,7 @@ def main():
           "verifikasi dihentikan bila satuan tidak dapat dipastikan/dikonversi")
     check("MarkOriginalUnknown" in copy_body,
           "kegagalan membaca Document.Unit dicatat, bukan diabaikan")
-    check("GEOMETRY_TOLERANCE_MM" in program and "CopyVerification.ToleranceMm" in program,
+    check("CopyVerification.ToleranceMm" in copy_body,
           "toleransi geometri eksplisit & terdokumentasi")
     check("MillimetersPerUnit" in units_src and "ToMillimeters" in units_src,
           "konversi satuan eksplisit tersedia (mm/inch/point)")
@@ -258,7 +272,7 @@ def main():
     check('CreateButton("Watermark' in program, "tombol Watermark dibuat di header")
     check("AddHandler wmButton.Click, AddressOf OpenWatermarkDialog" in program,
           "klik tombol Watermark ter-hook")
-    check("New WatermarkDialog(corelApp, selectedPages)" in program,
+    check("New WatermarkDialog(_connection.App, selectedPages)" in program,
           "dialog menerima daftar halaman yang dicentang")
     check("pagesList.CheckedItems" in method_body(program, "OpenWatermarkDialog"),
           "halaman tercentang diteruskan sebagai cakupan")
@@ -377,7 +391,7 @@ def main():
           "pengukuran memakai N objek TERATAS pada z-order")
     check("signature" in measure_src.lower() and "ShapeSignature" in measure_src,
           "struktur objek (jumlah + tipe) ikut diverifikasi")
-    check("New CopyRunSummary()" in copy_body and "CopyRunSummary" in copyverify_src,
+    check("Public Summary As New CopyRunSummary()" in copy_service and "CopyRunSummary" in copyverify_src,
           "ringkasan memakai satu sumber status")
     check("VerifiedCount" in copyverify_src and "PartialCount" in copyverify_src,
           "ringkasan memisahkan Verified dan Partial")
@@ -411,7 +425,7 @@ def main():
           "EndCommandGroup dijaga di semua jalur (watermark & hapus watermark)")
     check("SingleUndoGuaranteed" in undo_src and "undoGuard.Describe()" in copy_body,
           "laporan menyebut status grup undo, bukan menjanjikan satu Ctrl+Z")
-    check(re.search(r"BeginCommandGroup\(undoGuard\.Name\)", program) is not None,
+    check(re.search(r"BeginCommandGroup\(undoGuard\.Name\)", copy_service) is not None,
           "nama grup undo dipusatkan di guard")
 
     print("Audit reliabilitas D — status batch watermark:")
@@ -454,22 +468,27 @@ def main():
           "dokumen instance berbeda tidak dianggap sama")
     check("ComObjectHealth" in connection_src and "IsAlive" in connection_src,
           "objek COM mati terdeteksi")
-    connect_body = method_body(program, "ConnectToCorel")
-    check("Marshal.GetActiveObject" in connect_body, "instance yang berjalan diutamakan")
-    check(re.search(r"GetActiveObject[\s\S]*?Activator\.CreateInstance", connect_body) is not None,
+    connect_body = method_body(connection_service, "Connect")
+    check("Marshal.GetActiveObject" in corel_probe,
+          "instance yang berjalan diutamakan (probe COM terpisah, late bound)")
+    check("_resolveRunning(progId)" in connect_body and "_createInstance(progId)" in connect_body,
+          "pencarian instance berjalan mendahului pembuatan instance baru")
+    check(connect_body.find("_resolveRunning(progId)") < connect_body.find("_createInstance(progId)"),
           "instance baru hanya dibuat setelah instance berjalan gagal")
-    check("MessageBox.Show" in connect_body and "DialogResult.Yes" in connect_body,
-          "pembuatan instance baru meminta persetujuan (tidak diam-diam)")
+    check("ConfirmOpenNewInstance" in connect_body,
+          "pembuatan instance baru meminta persetujuan lewat ICorelPrompt (tidak diam-diam)")
+    check("MessageBox" not in connection_service,
+          "CorelConnectionService tidak memanggil MessageBox langsung")
     check("EnsureSameDocument" in copy_body, "dokumen target diverifikasi sebelum diubah")
     check("Function FromDocument(" in connection_src, "identitas dibaca dari objek dokumen")
-    check("identityText" in copy_body and "Dokumen     :" in copy_body,
+    check("result.IdentityText" in copy_body and "Dokumen     :" in method_body(program, "ConfirmCopy"),
           "identitas dokumen + jumlah halaman ditampilkan sebelum operasi")
-    check("ReleaseCorelReferences" in program, "referensi COM lama dilepas")
+    check("Public Sub Release()" in connection_service, "referensi COM lama dilepas")
 
     print("Aturan keselamatan:")
     check("shape.Delete" not in program, "tidak ada penghapusan objek di alur copy")
     check("Delete()" in engine, "penghapusan hanya ada di fitur hapus watermark")
-    check("ClearSelection" in program and "Tidak ada objek yang dihapus" in program,
+    check("ClearSelection" in autoselect_service and "Tidak ada objek yang dihapus" in autoselect_service,
           "seleksi dibersihkan tanpa fallback Delete")
     check("saveInPlaceCheck.Checked = False" not in read("dialog") or True,
           "default mode simpan tetap file baru (tidak menimpa asli)")
@@ -481,13 +500,15 @@ def main():
                 "tests_engine", "tests_existing", "tests_fakeshape",
                 "tests_classifier", "tests_scanner", "tests_nav",
                 "tests_pdffixture", "tests_pdf", "tests_placement",
-                "tests_logformat", "tests_batchrel"):
+                "tests_logformat", "tests_batchrel",
+                "tests_connectionsvc", "tests_copysvc", "tests_autoselectsvc"):
         check(os.path.exists(tests_files[key]), key + " ada di repo")
     tests_proj_src = read_path(tests_files["tests_proj"]) if os.path.exists(tests_files["tests_proj"]) else ""
     for source in ("CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                    "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb", "WatermarkEngine.vb",
                    "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb",
-                   "PdfProofValidator.vb", "WatermarkPlacementCheck.vb", "BatchRunTracker.vb"):
+                   "PdfProofValidator.vb", "WatermarkPlacementCheck.vb", "BatchRunTracker.vb",
+                 "CorelConnectionService.vb", "CopyService.vb", "AutoSelectService.vb"):
         check(source in tests_proj_src, "test mengompilasi ulang " + source + " (sumber yang sama)")
     tests_copy_src = read_path(tests_files["tests_copy"]) if os.path.exists(tests_files["tests_copy"]) else ""
     check("geometri tidak terukur -> Partial" in tests_copy_src,
@@ -556,13 +577,58 @@ def main():
     check("StopBatchClicked" in read("dialog") and "activeEngine" in read("dialog"),
           "UI punya tombol Hentikan yang terhubung ke mesin")
 
+    print("Arsitektur & baseline UI (dipatok SEBELUM refactor):")
+    for caption in ("Watermark...", "Muat ulang", "Pilih semua", "Kosongkan",
+                    "Salin ke halaman terpilih", "Select otomatis", "Pilih hasil berikutnya"):
+        check(caption in program, "tombol \"" + caption + "\" masih ada")
+    for handler in ("OpenWatermarkDialog", "RefreshClicked", "CopyClicked",
+                    "AutoSelectClicked", "NextMatchingPageClicked"):
+        check("AddressOf " + handler in program, "handler " + handler + " masih terpasang")
+    for title in ("01  Salin ke halaman", "02  Auto Select objek"):
+        check(title in program, "judul panel \"" + title + "\" tidak berubah")
+    for item in ("Teks (Artistik + Paragraf)", "Gambar / Bitmap", "Garis / Kurva terbuka",
+                 "Objek vektor (tanpa teks/bitmap/grup)", "Semua objek"):
+        check(item in program, "pilihan kategori \"" + item + "\" tidak berubah")
+    for item in ("Halaman aktif", "Pindai semua halaman"):
+        check(item in program, "pilihan cakupan \"" + item + "\" tidak berubah")
+    check("Status: siap. Buka dokumen di CorelDRAW." in program, "teks status awal tidak berubah")
+    check("Class PageItem" in program, "model item halaman (PageItem) dipertahankan")
+    check("TryBeginOperation" in program and "EndOperation" in program,
+          "busy guard tetap di lapisan UI")
+    check("CopierFormClosing" in program, "jendela tetap tidak bisa ditutup saat sibuk")
+
+    print("Arsitektur & batas lapisan:")
+    for name in ("CorelConnectionService.vb", "CopyService.vb", "AutoSelectService.vb"):
+        check(name in vbproj, name + " terdaftar di <Compile Include>")
+    check("Class CorelConnectionService" in read("connectionservice"),
+          "CorelConnectionService tersedia")
+    check("Class CopyService" in read("copyservice"), "CopyService tersedia")
+    check("Class AutoSelectService" in read("autoselectservice"), "AutoSelectService tersedia")
+    # UI tidak lagi memuat orkestrasi COM tingkat lanjut.
+    for forbidden, label in (("Marshal.GetActiveObject", "pelamaran instance COM"),
+                             ("BeginCommandGroup", "grup undo"),
+                             ("ActiveSelectionRange", "pembacaan seleksi aktif"),
+                             ("AddToSelection", "pemilihan objek")):
+        check(forbidden not in program, "Program.vb tidak lagi memuat " + label + " (pindah ke service)")
+    # Service tidak memakai WinForms / MessageBox.
+    for key in ("connectionservice", "copyservice", "autoselectservice"):
+        src = read(key)
+        check("System.Windows.Forms" not in src, key + " tidak bergantung pada WinForms")
+        check("MessageBox." not in src, key + " tidak memanggil MessageBox langsung")
+    check("ICorelPrompt" in read("connectionservice"), "interaksi pengguna koneksi lewat port ICorelPrompt")
+    check("ICopyPrompt" in read("copyservice"), "interaksi pengguna copy lewat port ICopyPrompt")
+    check("IProgressSink" in read("autoselectservice"), "progress Auto Select lewat port IProgressSink")
+    check("Class CopyTargetValidation" in read("copyservice"),
+          "validasi target copy dipisah dan murni (dapat diuji)")
+
     print("Build config:")
     for name in ("Program.vb", "WatermarkLayout.vb", "WatermarkEngine.vb", "WatermarkDialog.vb",
                  "WatermarkTokens.vb", "PresetStore.vb", "BatchLog.vb",
                  "CopyVerification.vb", "CopyMeasurement.vb", "DocumentUnits.vb",
                  "UndoGroup.vb", "BatchFilePolicy.vb", "CorelConnection.vb",
                  "ShapeClassifier.vb", "ShapeNode.vb", "ShapeScanner.vb", "SelectionNavigation.vb",
-                 "PdfProofValidator.vb", "WatermarkPlacementCheck.vb", "BatchRunTracker.vb"):
+                 "PdfProofValidator.vb", "WatermarkPlacementCheck.vb", "BatchRunTracker.vb",
+                 "CorelConnectionService.vb", "CopyService.vb", "AutoSelectService.vb"):
         check(name in vbproj, name + " terdaftar di <Compile Include>")
 
     print()

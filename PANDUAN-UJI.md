@@ -549,3 +549,42 @@ apakah posisi sesuai. Bila laporan menampilkan peringatan penempatan
 Tempelkan isi kotak laporan + potongan CSV + screenshot PDF/Object Manager ke
 tiket/PR, lalu ubah status di tabel §12.6 menjadi PASS/FAIL. Status **hanya**
 boleh PASS bila langkah visual benar-benar diperiksa dengan mata.
+
+---
+
+## 13. Uji refactor arsitektur (BARU — status: **NOT RUN** di lingkungan audit)
+
+Refactor 2026-10-27 memindahkan logika koneksi/copy/Auto Select dari
+`Program.vb` ke service. Yang harus dibuktikan ulang di mesin ber-CorelDRAW
+adalah **perilaku yang sama**, bukan tampilan baru.
+
+### 13.1 Bukti otomatis (sudah dijalankan, tanpa CorelDRAW)
+
+| Pemeriksaan | Hasil |
+|---|---|
+| Regression test | `253 lulus, 0 gagal` (216 test lama tetap lulus + 37 test service) |
+| Pemeriksaan statis | `351 pemeriksaan lulus, 0 gagal` |
+| Kompilasi net48 | `Build succeeded, 0 warning, 0 error` |
+
+### 13.2 Uji manual yang WAJIB di CorelDRAW (status awal: NOT RUN)
+
+| No | Langkah | Hasil yang benar | Status |
+|---|---|---|---|
+| 13.2.1 | Buka aplikasi tanpa CorelDRAW berjalan, klik **Muat ulang** | dialog izin membuka instance baru muncul (default **Tidak**); pilih Tidak → tidak ada jendela CorelDRAW baru | NOT RUN |
+| 13.2.2 | CorelDRAW terbuka dengan dokumen, klik **Muat ulang** | daftar halaman terisi, status `Dokumen terdeteksi: ...`, tanpa dialog tambahan | NOT RUN |
+| 13.2.3 | Buka dokumen A → Muat ulang → buka dokumen B di jendela yang sama → klik **Salin ke halaman terpilih** | dialog "Dokumen target berubah" muncul, operasi dibatalkan | NOT RUN |
+| 13.2.4 | Pilih objek, centang 2 halaman tujuan, klik **Salin ke halaman terpilih** → **Ya** | isi dialog konfirmasi sama seperti sebelumnya (Dokumen/Halaman asal/Halaman tuju/Satuan); setelah selesai laporan hasil sama formatnya; **satu** Ctrl+Z membatalkan seluruh operasi | NOT RUN |
+| 13.2.5 | Set satuan dokumen ke inch, ulangi 13.2.4 | satuan dokumen kembali ke inch setelah operasi; status satuan tercatat di laporan | NOT RUN |
+| 13.2.6 | Batalkan dialog konfirmasi copy | status `Copy dibatalkan oleh pengguna.`, dokumen tidak berubah | NOT RUN |
+| 13.2.7 | Jalankan **Select otomatis**, cakupan **Pindai semua halaman** | status progres `Memindai progres: halaman n/N | total objek cocok sementara: x.`; laporan per halaman sama formatnya; objek terpilih di halaman hasil pertama | NOT RUN |
+| 13.2.8 | Klik **Pilih hasil berikutnya** berulang sampai akhir | tidak ada halaman yang terlewat/diulang; di akhir muncul "Anda sudah berada pada hasil terakhir" dan tidak kembali ke hasil pertama | NOT RUN |
+| 13.2.9 | Ubah combo kategori setelah pemindaian, lalu klik **Pilih hasil berikutnya** | dialog "Hasil pemindaian tidak sesuai pilihan", navigasi berhenti | NOT RUN |
+| 13.2.10 | Jalankan **Select otomatis** pada halaman tanpa objek yang cocok | seleksi lama **tidak** berubah, dialog "Seleksi yang ada tidak diubah." | NOT RUN |
+| 13.2.11 | Buka **Watermark...** dari panel 01 | dialog watermark terbuka dan menerima halaman yang dicentang sebagai cakupan | NOT RUN |
+| 13.2.12 | Klik tombol saat operasi panjang berjalan (klik ganda) | klik kedua diabaikan, status tetap "… masih berjalan", jendela tidak bisa ditutup | NOT RUN |
+
+### 13.3 Aturan status
+
+Ubah NOT RUN menjadi PASS **hanya** bila langkah di atas benar-benar
+dijalankan dengan mata di CorelDRAW 2022. Semua langkah di §13.2 adalah
+perilaku yang sudah ada sebelum refactor; kegagalan di sini berarti regresi.

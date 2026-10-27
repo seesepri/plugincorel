@@ -114,6 +114,25 @@ Public Class FakeShape
         Return copy
     End Function
 
+    ''' <summary>Disalin ke clipboard palsu oleh selection.Copy().</summary>
+    Public Property Copied As Boolean = False
+
+    ''' <summary>Dipilih lewat AddToSelection pada dokumen induk.</summary>
+    Public Property Selected As Boolean = False
+
+    ''' <summary>Bila True, AddToSelection tidak berefek (simulasi objek tak dapat dipilih).</summary>
+    Public Property FailAddToSelection As Boolean = False
+
+    ''' <summary>Meniru Shape.AddToSelection(): hanya menandai, tidak mengubah geometri.</summary>
+    Public Sub AddToSelection()
+        If FailAddToSelection Then Return
+        Selected = True
+        If Layer IsNot Nothing AndAlso Layer.ParentPage IsNot Nothing Then
+            Dim doc As FakeDocument = Layer.ParentPage.OwnerDocument
+            If doc IsNot Nothing AndAlso Not doc.Selection.Contains(Me) Then doc.Selection.Add(Me)
+        End If
+    End Sub
+
     Public Sub Delete()
         Deleted = True
         If Layer IsNot Nothing Then Layer.Shapes.Remove(Me)
@@ -224,6 +243,16 @@ Public Class FakeLayer
         End Get
     End Property
 
+    ''' <summary>Meniru Layer.Paste(): isi clipboard masuk ke layer ini.</summary>
+    Public Sub Paste()
+        If FakeClipboard.Items Is Nothing Then Return
+        For Each source As FakeShape In FakeClipboard.Items
+            Dim copy As FakeShape = source.Duplicate(0, 0)
+            copy.Layer = Me
+            Items.Add(copy)
+        Next
+    End Sub
+
     Public Sub MoveToTop()
         MoveToTopCalled = True
     End Sub
@@ -279,6 +308,9 @@ Public Class FakeLayers
 End Class
 
 Public Class FakePage
+    ''' <summary>Dokumen pemilik halaman (dipakai AddToSelection).</summary>
+    Public Property OwnerDocument As FakeDocument = Nothing
+
     Public Property Index As Integer = 1
     Public Property SizeWidth As Double = 210
     Public Property SizeHeight As Double = 297
@@ -298,9 +330,34 @@ Public Class FakePage
         Me.Index = pageIndex
     End Sub
 
+    ''' <summary>Bila True, Activate melempar (simulasi halaman tidak dapat diakses).</summary>
+    Public Property FailActivate As Boolean = False
+
     Public Sub Activate()
+        If FailActivate Then Throw New InvalidOperationException("simulasi: halaman tidak dapat diaktifkan")
         Activated = True
     End Sub
+
+    ''' <summary>Meniru CorelDRAW: paste menambahkan shape hasil salinan ke layer aktif.</summary>
+    Public Sub Paste()
+        EnsureActiveLayer().Paste()
+    End Sub
+
+    ''' <summary>
+    ''' Meniru Page.Shapes: seluruh objek pada semua layer halaman.
+    ''' Dipakai AutoSelectService (pemindaian dimulai dari koleksi halaman).
+    ''' </summary>
+    Public ReadOnly Property Shapes As FakeShapeCollection
+        Get
+            Dim all As New List(Of FakeShape)()
+            For Each layer As FakeLayer In Layers.All
+                all.AddRange(layer.Items)
+            Next
+            Return New FakeShapeCollection(all)
+        End Get
+    End Property
+
+
 
     Public Function CreateLayer(layerName As String) As FakeLayer
         Dim layer As New FakeLayer()
@@ -338,8 +395,12 @@ Public Class FakePages
         End Get
     End Property
 
+    ''' <summary>Dokumen pemilik (diisi oleh FakeDocument saat halaman ditambahkan).</summary>
+    Public Property Owner As FakeDocument = Nothing
+
     Public Sub Add(page As FakePage)
         page.Index = _items.Count + 1
+        page.OwnerDocument = Owner
         _items.Add(page)
     End Sub
 
@@ -373,6 +434,11 @@ Public Class FakeDocument
     Public Property FailUnitRead As Boolean = False
     Public Property FailUnitSet As Boolean = False
     Public Property FailUnitRestore As Boolean = False
+    ''' <summary>
+    ''' Satuan tujuan yang penyetelannya SELALU gagal (mis. 1 = inch) — dipakai
+    ''' untuk menguji kegagalan PEMULIHAN satuan tanpa menggagalkan normalisasi mm.
+    ''' </summary>
+    Public Property FailUnitRestoreTo As Integer = -2
     Public Property FailBeginCommandGroup As Boolean = False
     Public Property FailEndCommandGroup As Boolean = False
     Public Property SaveFails As Boolean = False
@@ -388,6 +454,7 @@ Public Class FakeDocument
 
     Public Sub New()
         App = New FakeApplication()
+        Pages.Owner = Me
     End Sub
 
     Public Sub New(sourcePath As String)
@@ -395,6 +462,7 @@ Public Class FakeDocument
         Me.OriginalPath = sourcePath
         Me.Name = Path.GetFileName(sourcePath)
         App = New FakeApplication()
+        Pages.Owner = Me
     End Sub
 
     Public Property Unit As Integer
@@ -407,7 +475,8 @@ Public Class FakeDocument
             If FailUnitSet AndAlso value <> _unit Then
                 Throw New InvalidOperationException("simulasi: Document.Unit tidak dapat diubah")
             End If
-            If FailUnitRestore AndAlso value = 3 AndAlso _unit <> 3 Then
+            If (FailUnitRestore AndAlso value = 3 AndAlso _unit <> 3) OrElse
+               (FailUnitRestoreTo = value AndAlso value <> _unit) Then
                 _unit = 3
                 Throw New InvalidOperationException("simulasi: pemulihan satuan gagal")
             End If
@@ -455,6 +524,38 @@ Public Class FakeDocument
 
     ' --- PDF proof (Fokus C) ------------------------------------------------
     ''' <summary>Byte PDF yang ditulis oleh PublishToPDF. Nothing = PDF rusak/omong kosong.</summary>
+    ' --- seleksi (untuk CopyService & AutoSelectService) --------------------
+    ''' <summary>Shape yang saat ini terpilih.</summary>
+    Public ReadOnly Property Selection As New List(Of FakeShape)
+
+    ''' <summary>Jumlah pemanggilan ClearSelection (dipakai test "tidak destruktif").</summary>
+    Public Property ClearSelectionCalls As Integer = 0
+
+    ''' <summary>Bila True, ClearSelection melempar (simulasi COM gagal).</summary>
+    Public Property FailClearSelection As Boolean = False
+
+    Public Sub ClearSelection()
+        ClearSelectionCalls += 1
+        If FailClearSelection Then Throw New InvalidOperationException("simulasi: ClearSelection gagal")
+        Selection.Clear()
+    End Sub
+
+    ''' <summary>Meniru Application.ActiveSelectionRange (Count saja yang dipakai).</summary>
+    Public ReadOnly Property ActiveSelectionRange As FakeSelectionRange
+        Get
+            Return New FakeSelectionRange(Selection, Me)
+        End Get
+    End Property
+
+    ''' <summary>Meniru Selection.Copy(): isi clipboard dari shape terpilih.</summary>
+    Public Sub CopySelection()
+        FakeClipboard.Items = New List(Of FakeShape)(Selection)
+        For Each shape As FakeShape In Selection
+            shape.Copied = True
+        Next
+    End Sub
+
+    ' --- PDF proof (Fokus C) ------------------------------------------------
     Public Property PdfBytes As Byte() = Nothing
     ''' <summary>True = PublishToPDF melempar exception.</summary>
     Public Property PublishFails As Boolean = False
@@ -491,6 +592,22 @@ Public Class FakeCorelApplication
     ''' <summary>Jumlah dokumen yang masih terbuka (belum Close) — meniru app.Documents.</summary>
     Public ReadOnly Property Documents As New FakeDocuments()
 
+    ''' <summary>Dokumen "aktif" untuk service yang membaca app.ActiveDocument.</summary>
+    Public Property ActiveDocumentInstance As FakeDocument = Nothing
+
+    Public ReadOnly Property ActiveDocument As FakeDocument
+        Get
+            Return ActiveDocumentInstance
+        End Get
+    End Property
+
+    Public ReadOnly Property ActiveSelectionRange As FakeSelectionRange
+        Get
+            If ActiveDocumentInstance Is Nothing Then Return New FakeSelectionRange(New List(Of FakeShape)())
+            Return ActiveDocumentInstance.ActiveSelectionRange
+        End Get
+    End Property
+
     Public Property Application As FakeApplication = New FakeApplication()
 
     ''' <summary>Isi test untuk mengubah dokumen yang baru dibuka (mis. buat halaman).</summary>
@@ -513,6 +630,49 @@ Public Class FakeCorelApplication
         Documents.NotifyOpened(doc)
         Return doc
     End Function
+End Class
+
+''' <summary>Clipboard palsu bersama (satu proses test = satu clipboard).</summary>
+Public Class FakeClipboard
+    Public Shared Property Items As List(Of FakeShape) = Nothing
+
+    Public Shared Sub Clear()
+        Items = Nothing
+    End Sub
+End Class
+
+''' <summary>Meniru SelectionRange / selection shape: Count + Copy() + item.</summary>
+Public Class FakeSelectionRange
+    Private ReadOnly _items As List(Of FakeShape)
+    Private ReadOnly _document As FakeDocument
+
+    Public Sub New(items As List(Of FakeShape), Optional document As FakeDocument = Nothing)
+        _items = items
+        _document = document
+    End Sub
+
+    ''' <summary>Meniru Selection.Copy() (isi clipboard dokumen).</summary>
+    Public Sub Copy()
+        If _document IsNot Nothing Then _document.CopySelection()
+    End Sub
+
+    Public ReadOnly Property Count As Integer
+        Get
+            Return _items.Count
+        End Get
+    End Property
+
+    Public Default ReadOnly Property Item(oneBasedIndex As Integer) As FakeShape
+        Get
+            Return _items(oneBasedIndex - 1)
+        End Get
+    End Property
+
+    Public ReadOnly Property All As List(Of FakeShape)
+        Get
+            Return _items
+        End Get
+    End Property
 End Class
 
 ''' <summary>Koleksi dokumen terbuka (meniru Application.Documents.Count).</summary>

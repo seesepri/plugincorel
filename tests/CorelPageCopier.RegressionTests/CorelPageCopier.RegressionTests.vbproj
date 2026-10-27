@@ -49,6 +49,11 @@
     <Compile Include="..\..\CorelPageCopier\PdfProofValidator.vb" Link="Source\PdfProofValidator.vb" />
     <Compile Include="..\..\CorelPageCopier\WatermarkPlacementCheck.vb" Link="Source\WatermarkPlacementCheck.vb" />
     <Compile Include="..\..\CorelPageCopier\BatchRunTracker.vb" Link="Source\BatchRunTracker.vb" />
+    <Compile Include="..\..\CorelPageCopier\ServicePorts.vb" Link="Source\ServicePorts.vb" />
+    <Compile Include="..\..\CorelPageCopier\CorelComProbe.vb" Link="Source\CorelComProbe.vb" />
+    <Compile Include="..\..\CorelPageCopier\CorelConnectionService.vb" Link="Source\CorelConnectionService.vb" />
+    <Compile Include="..\..\CorelPageCopier\CopyService.vb" Link="Source\CopyService.vb" />
+    <Compile Include="..\..\CorelPageCopier\AutoSelectService.vb" Link="Source\AutoSelectService.vb" />
   </ItemGroup>
 
   <ItemGroup>
