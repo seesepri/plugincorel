@@ -47,6 +47,9 @@
     <Compile Include="..\..\CorelPageCopier\ShapeScanner.vb" Link="Source\ShapeScanner.vb" />
     <Compile Include="..\..\CorelPageCopier\SelectionNavigation.vb" Link="Source\SelectionNavigation.vb" />
     <Compile Include="..\..\CorelPageCopier\WatermarkEngine.vb" Link="Source\WatermarkEngine.vb" />
+    <Compile Include="..\..\CorelPageCopier\PdfProofValidator.vb" Link="Source\PdfProofValidator.vb" />
+    <Compile Include="..\..\CorelPageCopier\WatermarkPlacementCheck.vb" Link="Source\WatermarkPlacementCheck.vb" />
+    <Compile Include="..\..\CorelPageCopier\BatchRunTracker.vb" Link="Source\BatchRunTracker.vb" />
   </ItemGroup>
 
   <ItemGroup>
@@ -54,6 +57,7 @@
     <Compile Include="TestRunner.vb" />
     <Compile Include="FakeCorel.vb" />
     <Compile Include="FakeShapeNode.vb" />
+    <Compile Include="PdfFixture.vb" />
     <Compile Include="TestMain.vb" />
     <Compile Include="Tests\*.vb" />
   </ItemGroup>

@@ -502,12 +502,45 @@ Public Class FakeDocument
         If CloseFails Then Throw New InvalidOperationException("simulasi: Close gagal")
         Closed = True
     End Sub
+
+    ' --- PDF proof (Fokus C) ------------------------------------------------
+    ''' <summary>Byte PDF yang ditulis oleh PublishToPDF. Nothing = PDF rusak/omong kosong.</summary>
+    Public Property PdfBytes As Byte() = Nothing
+    ''' <summary>True = PublishToPDF melempar exception.</summary>
+    Public Property PublishFails As Boolean = False
+    ''' <summary>False = PublishToPDF "sukses" tetapi tidak menulis file (kasus nyata di CorelDRAW).</summary>
+    Public Property PublishWritesFile As Boolean = True
+    Public ReadOnly Property PublishedPdfPaths As New List(Of String)()
+
+    Public Sub PublishToPDF(targetFile As String)
+        If PublishFails Then Throw New InvalidOperationException("simulasi: PublishToPDF gagal")
+        PublishedPdfPaths.Add(targetFile)
+        If Not PublishWritesFile Then Return
+        Dim folder As String = Path.GetDirectoryName(targetFile)
+        If Not String.IsNullOrEmpty(folder) Then Directory.CreateDirectory(folder)
+        If PdfBytes Is Nothing Then
+            File.WriteAllText(targetFile, "bukan pdf")
+        Else
+            File.WriteAllBytes(targetFile, PdfBytes)
+        End If
+    End Sub
+
+    Public Sub ExportEx(targetFile As String, filter As Integer, options As Integer)
+        PublishToPDF(targetFile)
+    End Sub
 End Class
 
 ''' <summary>Aplikasi CorelDRAW palsu: OpenDocument mengembalikan FakeDocument.</summary>
 Public Class FakeCorelApplication
     Public ReadOnly Property Opened As New List(Of FakeDocument)()
     Public Property FailOpen As Boolean = False
+
+    ''' <summary>Bila True, file tertentu (berdasarkan nama) gagal dibuka.</summary>
+    Public Property FailOpenFor As New List(Of String)()
+
+    ''' <summary>Jumlah dokumen yang masih terbuka (belum Close) — meniru app.Documents.</summary>
+    Public ReadOnly Property Documents As New FakeDocuments()
+
     Public Property Application As FakeApplication = New FakeApplication()
 
     ''' <summary>Isi test untuk mengubah dokumen yang baru dibuka (mis. buat halaman).</summary>
@@ -515,6 +548,11 @@ Public Class FakeCorelApplication
 
     Public Function OpenDocument(sourcePath As String) As FakeDocument
         If FailOpen Then Throw New IOException("simulasi: OpenDocument gagal")
+        For Each blocked As String In FailOpenFor
+            If String.Equals(Path.GetFileName(sourcePath), blocked, StringComparison.OrdinalIgnoreCase) Then
+                Throw New IOException("simulasi: file sedang dipakai aplikasi lain")
+            End If
+        Next
         Dim doc As New FakeDocument(sourcePath)
         doc.Application = Application
         doc.Pages.Add(New FakePage(1))
@@ -522,6 +560,26 @@ Public Class FakeCorelApplication
         doc.ActivePage = doc.Pages(1)
         If Configure IsNot Nothing Then Configure.Invoke(doc)
         Opened.Add(doc)
+        Documents.NotifyOpened(doc)
         Return doc
     End Function
+End Class
+
+''' <summary>Koleksi dokumen terbuka (meniru Application.Documents.Count).</summary>
+Public Class FakeDocuments
+    Private ReadOnly _open As New List(Of FakeDocument)()
+
+    Public ReadOnly Property Count As Integer
+        Get
+            Dim live As Integer = 0
+            For Each doc As FakeDocument In _open
+                If Not doc.Closed Then live += 1
+            Next
+            Return live
+        End Get
+    End Property
+
+    Public Sub NotifyOpened(doc As FakeDocument)
+        If doc IsNot Nothing Then _open.Add(doc)
+    End Sub
 End Class
