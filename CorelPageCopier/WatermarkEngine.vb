@@ -803,17 +803,21 @@ Public Class WatermarkEngine
                     localResult.LogRowsWritten += partResult.LogRowsWritten
 
                     ' --- save: pemanggilan SaveAs & validasi output DIPISAH ------
-                    ' Review lanjutan PR #2 butir 2:
+                    ' Review lanjutan PR #2 butir 2 (dan temuan G pada review kedua):
                     '   - SaveCallSucceeded mencatat berhasil/gagalnya PEMANGGILAN,
                     '   - SaveSucceeded hanya True bila penulisan TERBUKTI (berkas
-                    '     baru muncul, atau berkas lama berubah ukuran/waktu),
+                    '     baru muncul, atau berkas lama berubah ukuran/waktu/isi),
                     '   - file lama yang masih ada TIDAK dianggap bukti sukses,
-                    '   - verifikasi memakai metadata file; dokumen TIDAK dibuka ulang
-                    '     sehingga dokumen aktif/instance COM pengguna tidak terganggu.
+                    '   - bentuk berkas (RIFF/CDR atau ZIP) diperiksa dari 12 byte
+                    '     pertama; bentuk tak dikenal -> TIDAK VALID, bukan OK,
+                    '   - verifikasi memakai metadata + isi file; dokumen TIDAK
+                    '     dibuka ulang sehingga dokumen aktif/instance COM pengguna
+                    '     tidak terganggu.
                     outcome.SaveAttempted = True
                     Dim saveMode As SaveOutputMode =
                         If(saveInPlace, SaveOutputMode.OverwriteInPlace, SaveOutputMode.NewFile)
-                    Dim beforeSave As SaveOutputSnapshot = SaveOutputSnapshot.Capture(targetPath)
+                    Dim requireSignature As Boolean = BatchFilePolicy.HasCorelExtension(targetPath)
+                    Dim beforeSave As SaveOutputSnapshot = SaveOutputSnapshot.Capture(targetPath, True)
 
                     Dim saveCallError As String = ""
                     Try
@@ -826,9 +830,9 @@ Public Class WatermarkEngine
                     End Try
 
                     If outcome.SaveCallSucceeded Then
-                        Dim afterSave As SaveOutputSnapshot = SaveOutputSnapshot.Capture(targetPath)
+                        Dim afterSave As SaveOutputSnapshot = SaveOutputSnapshot.Capture(targetPath, True)
                         Dim saveCheck As SaveOutputVerification =
-                            SaveOutputVerification.Verify(beforeSave, afterSave, saveMode)
+                            SaveOutputVerification.Verify(beforeSave, afterSave, saveMode, requireSignature)
                         outcome.SaveVerificationLabel = saveCheck.StatusLabel
                         outcome.SaveVerificationReason = saveCheck.Reason
 
@@ -844,6 +848,21 @@ Public Class WatermarkEngine
                             localResult.Failures.Add(Path.GetFileName(sourceFile) &
                                                      ": penyimpanan tidak terverifikasi (" &
                                                      saveCheck.StatusLabel & ") — " & saveCheck.Reason)
+
+                            ' Mode timpa: berkas sumber adalah berkas tujuan. Bila
+                            ' hasilnya hilang/kosong sesudah SaveAs, sumber
+                            ' kemungkinan sudah rusak -> pengguna WAJIB diberi tahu.
+                            If saveMode = SaveOutputMode.OverwriteInPlace AndAlso
+                               (saveCheck.Status = SaveOutputStatus.Missing OrElse
+                                saveCheck.Status = SaveOutputStatus.Empty OrElse
+                                saveCheck.Status = SaveOutputStatus.Invalid) Then
+                                Dim damageNote As String =
+                                    Path.GetFileName(sourceFile) & ": berkas sumber kemungkinan TIDAK LENGKAP " &
+                                    "atau rusak setelah penyimpanan gagal (" & saveCheck.StatusLabel & "). " &
+                                    "Pulihkan dari cadangan sebelum dipakai."
+                                outcome.Messages.Add(damageNote)
+                                localResult.Warnings.Add(damageNote)
+                            End If
                         End If
                     End If
 

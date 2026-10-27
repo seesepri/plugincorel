@@ -25,6 +25,7 @@ Module TestMain
         CopyVerificationTests.Register(runner)
         CopyMeasurementTests.Register(runner)
         CopyInputKindTests.Register(runner)
+        CopyInputEvidenceTests.Register(runner)
         CopyPipelineTests.Register(runner)
         DocumentUnitTests.Register(runner)
         UndoGroupTests.Register(runner)
@@ -32,6 +33,8 @@ Module TestMain
         ConnectionIdentityTests.Register(runner)
         EngineTests.Register(runner)
         SaveOutputVerificationTests.Register(runner)
+        SaveOutputContentTests.Register(runner)
+        BatchLogSummaryTests.Register(runner)
         ExistingFeatureTests.Register(runner)
 
         Dim exitCode As Integer = runner.RunAll()

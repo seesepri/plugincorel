@@ -170,6 +170,13 @@ Public Class CopyMeasurement
     ''' Tentukan jenis input pengukuran. Hasil Unknown berarti jumlah/jenis objek
     ''' tidak dapat dipastikan -> pemanggil wajib memperlakukan hasil sebagai
     ''' TIDAK terverifikasi (Partial), bukan sebagai satu Shape.
+    '''
+    ''' Penting (review kedua): "anggota Count tidak ada" HANYA boleh dianggap
+    ''' Shape tunggal bila objeknya memang terbukti berbentuk Shape, yaitu kode
+    ''' tipenya (Shape.Type) terbaca. Objek tanpa Count dan tanpa tipe terbaca
+    ''' bisa saja koleksi yang rusak atau objek asing; mengukurnya sebagai satu
+    ''' Shape akan menghasilkan geometri yang tampak cocok padahal jumlah objek
+    ''' tidak diketahui.
     ''' </summary>
     Public Shared Function ClassifyInput(value As Object) As MeasurementInputKind
         If value Is Nothing Then Return MeasurementInputKind.Empty
@@ -183,11 +190,23 @@ Public Class CopyMeasurement
                 End If
                 Return MeasurementInputKind.ShapeCollection
             Case CountReadStatus.MemberMissing
-                ' Benar-benar tidak punya Count: Shape tunggal.
-                Return MeasurementInputKind.SingleShape
+                ' Tidak punya Count: baru dianggap Shape tunggal bila bentuk
+                ' objeknya terbukti (kode tipe terbaca).
+                If LooksLikeShape(value) Then Return MeasurementInputKind.SingleShape
+                Return MeasurementInputKind.Unknown
             Case Else
                 Return MeasurementInputKind.Unknown
         End Select
+    End Function
+
+    ''' <summary>
+    ''' True bila objek memberi bukti bahwa dirinya Shape: kode tipe terbaca.
+    ''' Dipakai hanya untuk memverifikasi kandidat "Shape tunggal"; objek yang
+    ''' gagal membaca tipe tidak pernah dipaksa menjadi Shape.
+    ''' </summary>
+    Public Shared Function LooksLikeShape(value As Object) As Boolean
+        If value Is Nothing Then Return False
+        Return SafeTypeCode(value) >= 0
     End Function
 
     ''' <summary>Label jenis input untuk laporan (tanpa menebak yang tidak diketahui).</summary>
@@ -220,12 +239,16 @@ Public Class CopyMeasurement
     ''' True bila exception berarti "anggota tidak ditemukan" (member tidak ada),
     ''' bukan kegagalan COM/RPC. Dipakai untuk membedakan Shape tunggal dari
     ''' koleksi yang Count-nya gagal dibaca.
+    '''
+    ''' NotSupportedException TIDAK dihitung sebagai anggota hilang (review
+    ''' kedua): anggota yang ada tetapi "tidak didukung" tidak membuktikan
+    ''' bahwa objek tidak punya Count. Pembedaan ini hanya salah satu syarat;
+    ''' lihat juga LooksLikeShape di ClassifyInput.
     ''' </summary>
     Public Shared Function IsMemberMissing(ex As Exception) As Boolean
         Dim current As Exception = ex
         Do While current IsNot Nothing
-            If TypeOf current Is MissingMemberException OrElse
-               TypeOf current Is NotSupportedException Then
+            If TypeOf current Is MissingMemberException Then
                 Return True
             End If
             ' DISP_E_MEMBERNOTFOUND / DISP_E_UNKNOWNNAME: anggota tidak ada.
@@ -324,6 +347,11 @@ Public Class CopyMeasurement
             result.Bounds = BoundingBox.Empty()
             result.Reason = "geometri tidak dapat diukur" &
                             If(String.IsNullOrEmpty(geometryError), "", ": " & geometryError)
+            ' Review kedua: pengukuran yang TERPOTONG tidak boleh meninggalkan
+            ' sidik jari struktur yang tampak lengkap. Tanpa tanda ini, koleksi
+            ' yang jumlah sebenarnya lebih kecil/lebih besar dari Count yang
+            ' dilaporkan bisa dibandingkan seolah-olah utuh.
+            result.Signature.MarkUnreadable()
         End If
 
         Return result
@@ -400,8 +428,16 @@ Public Class CopyMeasurement
             result.Source = "selection (" & DescribeInputKind(kind) & ")"
             result.Bounds = BoundingBox.Empty()
             result.Signature.MarkUnreadable()
-            result.Reason = "jumlah objek seleksi tidak dapat diverifikasi (" &
-                            countRead.Describe() & ")"
+            If countRead.IsMemberMissing Then
+                ' Tidak punya Count, tetapi juga tidak terbukti berbentuk Shape:
+                ' jumlah objek TIDAK boleh ditebak sebagai satu.
+                result.Reason = "jumlah objek seleksi tidak dapat diverifikasi (" &
+                                countRead.Describe() & "; bentuk objek juga tidak dapat dipastikan " &
+                                "sebagai satu Shape karena kode tipenya tidak terbaca)"
+            Else
+                result.Reason = "jumlah objek seleksi tidak dapat diverifikasi (" &
+                                countRead.Describe() & ")"
+            End If
             Return result
         End If
 
@@ -468,11 +504,20 @@ Public Class CopyMeasurement
         Dim primary As MeasuredShapeSet = MeasureTopShapes(layerShapes, addedCount)
         If primary.HasGeometry Then Return primary
 
-        If addedCount > 0 AndAlso selectionRange IsNot Nothing AndAlso SafeCount(selectionRange) = addedCount Then
+        ' Review kedua: fallback HANYA dipakai bila jumlah objek seleksi benar-
+        ' benar terbaca DAN sama dengan jumlah objek baru. SafeCount (-1 untuk
+        ' kedua jenis kegagalan) tidak lagi dipakai sebagai penentu, supaya
+        ' "Count gagal dibaca" tidak pernah dianggap cocok.
+        Dim selectionCount As CountReadResult = TryReadCount(selectionRange)
+        If addedCount > 0 AndAlso selectionCount.IsOk AndAlso selectionCount.Count = addedCount Then
             Dim fallback As MeasuredShapeSet = MeasureSelection(selectionRange)
             fallback.Source = "selection setelah paste"
             If fallback.HasGeometry Then Return fallback
             If String.IsNullOrEmpty(primary.Reason) Then primary.Reason = fallback.Reason
+        ElseIf addedCount > 0 AndAlso selectionRange IsNot Nothing AndAlso Not selectionCount.IsOk Then
+            ' Alasan fallback tidak dipakai ikut dilaporkan (transparansi).
+            Dim note As String = "fallback selection tidak dipakai (" & selectionCount.Describe() & ")"
+            primary.Reason = If(String.IsNullOrEmpty(primary.Reason), note, primary.Reason & "; " & note)
         End If
 
         Return primary

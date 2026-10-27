@@ -325,6 +325,21 @@ Public Class BatchFilePolicy
         Return candidatePath
     End Function
 
+    ''' <summary>
+    ''' True bila berkas ini seharusnya berupa dokumen CorelDRAW, sehingga
+    ''' bentuk isinya perlu diperiksa setelah penyimpanan (review kedua, temuan G).
+    ''' Dipakai engine supaya pemeriksaan tanda tangan hanya berlaku untuk
+    ''' berkas .cdr/.cdt/.cdx — bukan untuk output lain (mis. PDF proof).
+    ''' </summary>
+    Public Shared Function HasCorelExtension(filePath As String) As Boolean
+        If String.IsNullOrEmpty(filePath) Then Return False
+        Dim extension As String = Path.GetExtension(filePath)
+        If String.IsNullOrEmpty(extension) Then Return False
+        Return String.Equals(extension, ".cdr", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(extension, ".cdt", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(extension, ".cdx", StringComparison.OrdinalIgnoreCase)
+    End Function
+
     ''' <summary>True bila dua path menunjuk file yang sama (case-insensitive).</summary>
     Public Shared Function SamePath(left As String, right As String) As Boolean
         If String.IsNullOrEmpty(left) OrElse String.IsNullOrEmpty(right) Then Return False

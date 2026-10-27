@@ -222,9 +222,12 @@ Public Module SaveOutputVerificationTests
             Dim folder As String = NewTempFolder("staleoutput")
             Try
                 File.WriteAllText(Path.Combine(folder, "a.cdr"), "x")
-                ' Output dari eksekusi sebelumnya sudah ada.
+                ' Output dari eksekusi sebelumnya sudah ada. Isinya dibuat
+                ' menyerupai berkas CorelDRAW yang sah (kontainer RIFF/CDRX),
+                ' supaya yang diuji benar-benar cabang "file lama masih ada dan
+                ' tidak berubah" — bukan cabang "isi bukan CDR".
                 Dim stalePath As String = Path.Combine(folder, "a_wm.cdr")
-                File.WriteAllText(stalePath, "output lama")
+                File.WriteAllBytes(stalePath, FakeDocument.FakeCdrBytes(False, False))
                 Dim staleTime As DateTime = File.GetLastWriteTimeUtc(stalePath)
 
                 Dim app As New FakeCorelApplication()
@@ -255,7 +258,9 @@ Public Module SaveOutputVerificationTests
             Dim folder As String = NewTempFolder("overwritestale")
             Try
                 Dim sourcePath As String = Path.Combine(folder, "a.cdr")
-                File.WriteAllText(sourcePath, "isi asli")
+                ' Berkas sumber yang sah (RIFF/CDRX): fokus test adalah "file lama
+                ' tidak berubah", bukan "isi bukan CDR".
+                File.WriteAllBytes(sourcePath, FakeDocument.FakeCdrBytes(False, False))
                 Dim originalTime As DateTime = File.GetLastWriteTimeUtc(sourcePath)
 
                 Dim app As New FakeCorelApplication()

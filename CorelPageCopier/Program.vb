@@ -719,14 +719,54 @@ End Sub
                 Return
             End If
 
+            ' --- Seleksi: jumlah objek dibaca dengan status eksplisit ---------
+            ' Review kedua: `CInt(selection.Count)` membuat kegagalan membaca
+            ' Count berubah menjadi exception umum ("Operasi dihentikan oleh
+            ' kesalahan"), dan kegagalan COM saat membaca seleksi dilaporkan
+            ' sebagai "tidak ada seleksi". Keduanya menyesatkan. Sekarang:
+            '   - seleksi tidak terbaca      -> dibatalkan dengan pesan COM jelas,
+            '   - Count terbaca & 0          -> "tidak ada seleksi",
+            '   - Count gagal dibaca         -> dibatalkan SEBELUM dokumen diubah
+            '                                  (jumlah objek tidak boleh ditebak),
+            '   - tidak punya Count (Shape)  -> diteruskan; pengukuran yang
+            '                                  menandai Partial bila tak terbukti.
             Dim selection As Object = Nothing
+            Dim selectionReadError As String = ""
             Try
                 selection = corelApp.ActiveSelectionRange
-            Catch
+            Catch ex As Exception
                 selection = Nothing
+                selectionReadError = ex.GetType().Name & ": " & ex.Message
             End Try
-            If selection Is Nothing OrElse CInt(selection.Count) = 0 Then
+
+            If selection Is Nothing Then
+                If selectionReadError <> "" Then
+                    MessageBox.Show("Seleksi tidak dapat dibaca dari CorelDRAW:" &
+                                    Microsoft.VisualBasic.Constants.vbCrLf & selectionReadError &
+                                    Microsoft.VisualBasic.Constants.vbCrLf &
+                                    Microsoft.VisualBasic.Constants.vbCrLf &
+                                    "Copy dibatalkan; dokumen tidak diubah.",
+                                    "Seleksi tidak dapat dibaca", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                    statusLabel.Text = "Copy dibatalkan: seleksi tidak dapat dibaca."
+                Else
+                    MessageBox.Show("Pilih objek pada halaman sumber terlebih dahulu.", "Tidak ada seleksi", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                End If
+                Return
+            End If
+
+            Dim selectionCount As CountReadResult = CopyMeasurement.TryReadCount(selection)
+            If selectionCount.IsOk AndAlso selectionCount.Count = 0 Then
                 MessageBox.Show("Pilih objek pada halaman sumber terlebih dahulu.", "Tidak ada seleksi", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return
+            End If
+            If Not selectionCount.IsOk AndAlso Not selectionCount.IsMemberMissing Then
+                MessageBox.Show("Jumlah objek seleksi tidak dapat diverifikasi:" &
+                                Microsoft.VisualBasic.Constants.vbCrLf & selectionCount.Describe() &
+                                Microsoft.VisualBasic.Constants.vbCrLf &
+                                Microsoft.VisualBasic.Constants.vbCrLf &
+                                "Copy dibatalkan sebelum dokumen diubah, karena hasil tidak akan bisa diverifikasi.",
+                                "Seleksi tidak dapat diverifikasi", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                statusLabel.Text = "Copy dibatalkan: jumlah objek seleksi tidak dapat diverifikasi."
                 Return
             End If
 
@@ -813,10 +853,33 @@ End Sub
                     destination.Activate()
                     Dim layer As Object = destination.ActiveLayer
                     Dim layerShapes As Object = layer.Shapes
-                    Dim beforeCount As Integer = CInt(layerShapes.Count)
+
+                    ' Review kedua: jumlah objek layer dibaca dengan status
+                    ' eksplisit. Kegagalan membaca Count TIDAK dianggap 0 (dan
+                    ' tidak boleh menghasilkan "paste tidak menambah objek" yang
+                    ' menyesatkan maupun exception mentah).
+                    Dim beforeRead As CountReadResult = CopyMeasurement.TryReadCount(layerShapes)
+                    If Not beforeRead.IsOk Then
+                        summary.Add(pageIndex, CopyVerifyStatus.Failed,
+                                    "jumlah objek pada layer tujuan tidak dapat dibaca sebelum paste (" &
+                                    beforeRead.Describe() & "); halaman dilewati, tidak ada klaim berhasil.")
+                        Continue For
+                    End If
+
                     layer.Paste()
-                    Dim afterCount As Integer = CInt(layerShapes.Count)
-                    Dim added As Integer = afterCount - beforeCount
+
+                    Dim afterRead As CountReadResult = CopyMeasurement.TryReadCount(layerShapes)
+                    If Not afterRead.IsOk Then
+                        ' Paste sudah dijalankan tetapi hasilnya tak terhitung:
+                        ' itu "paste terjadi, verifikasi tidak lengkap" = Partial,
+                        ' bukan sukses dan bukan pula klaim bahwa paste gagal.
+                        summary.Add(pageIndex, CopyVerifyStatus.PartiallyVerified,
+                                    "jumlah objek pada layer tujuan tidak dapat dibaca setelah paste (" &
+                                    afterRead.Describe() & "); hasil paste tidak dapat diverifikasi.")
+                        Continue For
+                    End If
+
+                    Dim added As Integer = afterRead.Count - beforeRead.Count
 
                     Dim pastedSelection As Object = Nothing
                     Try
