@@ -168,6 +168,7 @@ Diukur pada branch `refactor/safe-architecture` setelah semua pemindahan selesai
 | Regression test | 216 lulus / 0 gagal | **253 lulus / 0 gagal** | +37 test baru untuk service |
 | Pemeriksaan statis | 295 lulus / 0 gagal | **351 lulus / 0 gagal** | +56 pemeriksaan (batas lapisan & UI) |
 | Kompilasi net48 (lokal) | 0 warning / 0 error | **0 warning / 0 error** | tetap |
+| Build Release x64 Windows (CI) | PASS — run 40447818533 | **PASS — run 40450455253** | tetap |
 | `Program.vb` | 1342 baris | **983 baris** | −359 (−27 %) |
 | Modul pendukung | 17 file / 9027 baris | 25 file / 9826 baris | +8 file (5 service/port + tests) |
 | `Marshal.GetActiveObject` di `Program.vb` | ada | **tidak ada** (pindah ke `CorelComProbe.vb`) | 0 |

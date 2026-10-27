@@ -106,7 +106,7 @@ ditulis baru; teks dialog dan perilaku tombol dipertahankan.
 | Regression test (`dotnet run --project tests/CorelPageCopier.RegressionTests -c Release`) | 216 lulus / 0 gagal | **253 lulus / 0 gagal** | PASS |
 | Pemeriksaan statis (`python3 tools/static-checks.py`) | 295 lulus / 0 gagal | **351 lulus / 0 gagal** | PASS |
 | Kompilasi net48 semua modul (`/tmp/cc`, SDK-style glob) | 0 warning / 0 error | **0 warning / 0 error** | PASS |
-| Build Release x64 Windows (MSBuild non-SDK, CI `windows-latest`) | PASS (run 40447818533) | lihat §4.3 | — |
+| Build Release x64 Windows (MSBuild non-SDK, CI `windows-latest`) | PASS (run 40447818533) | **PASS (run 40450455253)** — `0 Warning(s)`, `0 Error(s)` | PASS |
 
 216 test lama **tetap ada dan tetap lulus**; 37 test baru menambah cakupan
 service. 56 pemeriksaan statis baru memaku UI & batas lapisan.
@@ -127,9 +127,17 @@ service. 56 pemeriksaan statis baru memaku UI & batas lapisan.
 ### 4.3 Build Release x64 Windows
 
 Dijalankan oleh GitHub Actions (`windows-latest`, MSBuild, non-SDK `.vbproj`,
-platform x64) pada commit refactor ini. Hasil run dicatat di komentar PR dan
-di `docs/ARCHITECTURE.md` §6 — **hanya** diklaim PASS bila log MSBuild
-menunjukkan `0 Warning(s) / 0 Error(s)` dan `bin\x64\Release\CorelPageCopier.exe`.
+platform x64).
+
+* Run **40450455253** pada commit `dce7399` — job `Build Windows x64`: **success**.
+* Log CI: `SEMUA PEMERIKSAAN STATIS LULUS`; `Ringkasan: 253 lulus, 0 gagal, 253 total.`;
+  `CorelPageCopier -> ...\bin\x64\Release\CorelPageCopier.exe`; `Build succeeded.`
+  dengan `0 Warning(s)` dan `0 Error(s)`.
+* Bukti ditempel sebagai komentar di PR #5:
+  https://github.com/seesepri/plugincorel/pull/5#issuecomment-6433849936
+
+Status PASS **hanya** diklaim karena log MSBuild di atas memang menunjukkan
+0 warning / 0 error dan executable x64 dihasilkan.
 
 ### 4.4 Yang tetap **NOT RUN**
 
