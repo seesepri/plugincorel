@@ -69,8 +69,19 @@ Public Class BatchFileOutcome
     Public PagesFailed As Integer = 0
 
     ' --- save ---------------------------------------------------------------
+    ''' <summary>True bila SaveAs dipanggil untuk file ini.</summary>
     Public SaveAttempted As Boolean = False
+    ''' <summary>
+    ''' True bila PEMANGGILAN SaveAs tidak melempar. Terpisah dari SaveSucceeded:
+    ''' pemanggilan bisa "berhasil" tanpa menulis apa pun.
+    ''' </summary>
+    Public SaveCallSucceeded As Boolean = False
+    ''' <summary>True HANYA bila penulisan output terbukti (lihat SaveOutputVerification).</summary>
     Public SaveSucceeded As Boolean = False
+    ''' <summary>Label hasil verifikasi output (BARU/DIPERBARUI/TIDAK BERUBAH/...).</summary>
+    Public SaveVerificationLabel As String = ""
+    ''' <summary>Alasan verifikasi output (ditampilkan apa adanya).</summary>
+    Public SaveVerificationReason As String = ""
 
     ' --- statistik ----------------------------------------------------------
     Public ShapesCreated As Integer = 0
@@ -117,7 +128,16 @@ Public Class BatchFileOutcome
             parts.Add(PagesFailed.ToString(CultureInfo.InvariantCulture) & " halaman gagal")
         End If
         If SaveAttempted Then
-            parts.Add(If(SaveSucceeded, "save OK", "SAVE GAGAL"))
+            If SaveSucceeded Then
+                parts.Add("save OK" & If(String.IsNullOrEmpty(SaveVerificationLabel),
+                                          "", " (" & SaveVerificationLabel & ")"))
+            ElseIf SaveCallSucceeded Then
+                ' SaveAs tidak melempar, tetapi penulisan tidak terbukti.
+                parts.Add("SAVE TIDAK TERVERIFIKASI (" &
+                          If(String.IsNullOrEmpty(SaveVerificationLabel), "?", SaveVerificationLabel) & ")")
+            Else
+                parts.Add("SAVE GAGAL")
+            End If
         Else
             parts.Add("save tidak dijalankan")
         End If

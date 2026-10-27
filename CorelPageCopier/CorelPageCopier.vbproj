@@ -44,6 +44,7 @@
     <Compile Include="DocumentUnits.vb" />
     <Compile Include="UndoGroup.vb" />
     <Compile Include="BatchFilePolicy.vb" />
+    <Compile Include="SaveOutputVerification.vb" />
     <Compile Include="CorelConnection.vb" />
   </ItemGroup>
   <ItemGroup>

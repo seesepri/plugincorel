@@ -21,6 +21,69 @@ Option Infer On
 ' ============================================================================
 
 Imports System
+Imports System.Collections.Generic
+Imports System.Globalization
+
+''' <summary>
+''' Jenis input yang diukur. Dicatat di hasil pengukuran supaya laporan bisa
+''' menyebut apa yang sebenarnya diukur (bukan menebak).
+''' </summary>
+Public Enum MeasurementInputKind
+    Empty = 0
+    ''' <summary>Objek Shape tunggal: TIDAK memiliki anggota Count.</summary>
+    SingleShape = 1
+    ''' <summary>ShapeRange (nama tipe mengandung "ShapeRange").</summary>
+    ShapeRange = 2
+    ''' <summary>Koleksi COM lain (mis. Shapes, Selection) yang punya Count.</summary>
+    ShapeCollection = 3
+    ''' <summary>Punya Count tetapi gagal dibaca, atau jenis tidak dapat dipastikan.</summary>
+    Unknown = 4
+End Enum
+
+''' <summary>
+''' Status pembacaan Count. Perbedaan MemberMissing vs Failed adalah inti
+''' perbaikan di file ini:
+'''   - MemberMissing : objek memang TIDAK punya Count (Shape tunggal). Aman
+'''                     diukur sebagai satu objek.
+'''   - Failed        : punya Count tetapi gagal dibaca (COM mati, RPC sibuk,
+'''                     akses ditolak). Jumlah objek TIDAK diketahui, sehingga
+'''                     TIDAK boleh diperlakukan sebagai satu Shape.
+''' </summary>
+Public Enum CountReadStatus
+    Ok = 0
+    MemberMissing = 1
+    Failed = 2
+End Enum
+
+''' <summary>Hasil satu percobaan membaca Count (tidak pernah melempar).</summary>
+Public Structure CountReadResult
+    Public Status As CountReadStatus
+    Public Count As Integer
+    Public ErrorMessage As String
+
+    Public ReadOnly Property IsOk As Boolean
+        Get
+            Return Status = CountReadStatus.Ok
+        End Get
+    End Property
+
+    Public ReadOnly Property IsMemberMissing As Boolean
+        Get
+            Return Status = CountReadStatus.MemberMissing
+        End Get
+    End Property
+
+    Public Function Describe() As String
+        Select Case Status
+            Case CountReadStatus.Ok
+                Return "Count = " & Count.ToString(CultureInfo.InvariantCulture)
+            Case CountReadStatus.MemberMissing
+                Return "objek tidak memiliki anggota Count"
+            Case Else
+                Return "Count tidak dapat dibaca: " & ErrorMessage
+        End Select
+    End Function
+End Structure
 
 ''' <summary>Hasil pengukuran satu kelompok objek (kotak + sidik jari struktur).</summary>
 Public Class MeasuredShapeSet
@@ -30,6 +93,8 @@ Public Class MeasuredShapeSet
     Public Source As String = ""
     ''' <summary>Alasan bila pengukuran tidak lengkap.</summary>
     Public Reason As String = ""
+    ''' <summary>Jenis input yang diukur (Shape tunggal / ShapeRange / koleksi / tidak dikenal).</summary>
+    Public InputKind As MeasurementInputKind = MeasurementInputKind.Unknown
 
     Public ReadOnly Property HasGeometry As Boolean
         Get
@@ -49,6 +114,7 @@ Public Class MeasuredShapeSet
         copy.Signature = Signature
         copy.Source = Source
         copy.Reason = Reason
+        copy.InputKind = InputKind
         If Bounds.IsValid AndAlso factor > 0.0 Then copy.Bounds = Bounds.Scale(factor)
         Return copy
     End Function
@@ -57,14 +123,129 @@ End Class
 ''' <summary>Helper pengukuran shape lewat late binding.</summary>
 Public Class CopyMeasurement
 
-    ''' <summary>Baca jumlah item sebuah koleksi/range; -1 bila tidak terbaca.</summary>
+    ''' <summary>
+    ''' Baca jumlah item sebuah koleksi/range; -1 bila tidak terbaca.
+    ''' API lama dipertahankan, tetapi TIDAK membedakan "tidak punya Count"
+    ''' dari "Count gagal dibaca" — pakai TryReadCount untuk keputusan.
+    ''' </summary>
     Public Shared Function SafeCount(collection As Object) As Integer
-        If collection Is Nothing Then Return -1
+        Dim read As CountReadResult = TryReadCount(collection)
+        If read.IsOk Then Return read.Count
+        Return -1
+    End Function
+
+    ''' <summary>
+    ''' Baca Count sambil membedakan tiga kemungkinan:
+    '''   Ok            -> jumlah objek diketahui,
+    '''   MemberMissing -> objek tidak punya Count (Shape tunggal),
+    '''   Failed        -> Count ada tetapi gagal dibaca (jumlah TIDAK diketahui).
+    ''' Tidak pernah melempar.
+    ''' </summary>
+    Public Shared Function TryReadCount(value As Object) As CountReadResult
+        Dim result As New CountReadResult()
+        result.Count = -1
+        If value Is Nothing Then
+            result.Status = CountReadStatus.Failed
+            result.ErrorMessage = "objek null"
+            Return result
+        End If
+
         Try
-            Return CInt(collection.Count)
-        Catch
-            Return -1
+            result.Count = CInt(value.Count)
+            result.Status = CountReadStatus.Ok
+            Return result
+        Catch ex As Exception
+            result.Count = -1
+            result.ErrorMessage = DescribeError(ex)
+            If IsMemberMissing(ex) Then
+                result.Status = CountReadStatus.MemberMissing
+            Else
+                result.Status = CountReadStatus.Failed
+            End If
+            Return result
         End Try
+    End Function
+
+    ''' <summary>
+    ''' Tentukan jenis input pengukuran. Hasil Unknown berarti jumlah/jenis objek
+    ''' tidak dapat dipastikan -> pemanggil wajib memperlakukan hasil sebagai
+    ''' TIDAK terverifikasi (Partial), bukan sebagai satu Shape.
+    ''' </summary>
+    Public Shared Function ClassifyInput(value As Object) As MeasurementInputKind
+        If value Is Nothing Then Return MeasurementInputKind.Empty
+
+        Dim read As CountReadResult = TryReadCount(value)
+        Select Case read.Status
+            Case CountReadStatus.Ok
+                Dim typeLabel As String = SafeTypeName(value)
+                If typeLabel.IndexOf("ShapeRange", StringComparison.OrdinalIgnoreCase) >= 0 Then
+                    Return MeasurementInputKind.ShapeRange
+                End If
+                Return MeasurementInputKind.ShapeCollection
+            Case CountReadStatus.MemberMissing
+                ' Benar-benar tidak punya Count: Shape tunggal.
+                Return MeasurementInputKind.SingleShape
+            Case Else
+                Return MeasurementInputKind.Unknown
+        End Select
+    End Function
+
+    ''' <summary>Label jenis input untuk laporan (tanpa menebak yang tidak diketahui).</summary>
+    Public Shared Function DescribeInputKind(kind As MeasurementInputKind) As String
+        Select Case kind
+            Case MeasurementInputKind.Empty
+                Return "kosong"
+            Case MeasurementInputKind.SingleShape
+                Return "Shape tunggal (tanpa Count)"
+            Case MeasurementInputKind.ShapeRange
+                Return "ShapeRange"
+            Case MeasurementInputKind.ShapeCollection
+                Return "koleksi objek"
+            Case Else
+                Return "jenis tidak dikenali"
+        End Select
+    End Function
+
+    ''' <summary>Nama tipe objek (aman; "" bila tidak terbaca).</summary>
+    Public Shared Function SafeTypeName(value As Object) As String
+        If value Is Nothing Then Return ""
+        Try
+            Return Microsoft.VisualBasic.Information.TypeName(value)
+        Catch
+            Return ""
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' True bila exception berarti "anggota tidak ditemukan" (member tidak ada),
+    ''' bukan kegagalan COM/RPC. Dipakai untuk membedakan Shape tunggal dari
+    ''' koleksi yang Count-nya gagal dibaca.
+    ''' </summary>
+    Public Shared Function IsMemberMissing(ex As Exception) As Boolean
+        Dim current As Exception = ex
+        Do While current IsNot Nothing
+            If TypeOf current Is MissingMemberException OrElse
+               TypeOf current Is NotSupportedException Then
+                Return True
+            End If
+            ' DISP_E_MEMBERNOTFOUND / DISP_E_UNKNOWNNAME: anggota tidak ada.
+            If current.HResult = &H80020003 OrElse current.HResult = &H80020006 Then
+                Return True
+            End If
+            current = current.InnerException
+        Loop
+        Return False
+    End Function
+
+    ''' <summary>Ringkasan exception untuk laporan (dibuka dari wrapper invocation).</summary>
+    Public Shared Function DescribeError(ex As Exception) As String
+        Dim current As Exception = ex
+        While current.InnerException IsNot Nothing AndAlso
+              (TypeOf current Is System.Reflection.TargetInvocationException)
+            current = current.InnerException
+        End While
+        If current Is Nothing Then Return "tidak diketahui"
+        Return current.GetType().Name & ": " & current.Message
     End Function
 
     ''' <summary>Baca kode tipe shape; -1 bila tidak terbaca.</summary>
@@ -161,39 +342,79 @@ Public Class CopyMeasurement
             Return result
         End If
 
-        Dim total As Integer = SafeCount(shapes)
+        Dim countRead As CountReadResult = TryReadCount(shapes)
+        If Not countRead.IsOk Then
+            ' Jumlah objek layer TIDAK diketahui: jangan mengarang hasil ukur.
+            result.Bounds = BoundingBox.Empty()
+            result.Signature.MarkUnreadable()
+            result.Reason = "jumlah objek pada layer tidak dapat dibaca (" & countRead.Describe() & ")"
+            Return result
+        End If
+
+        Dim total As Integer = countRead.Count
         If total < addedCount Then
             result.Reason = "koleksi layer hanya berisi " & total & " objek, kurang dari " & addedCount & " objek baru"
             Return result
         End If
 
-        Return MeasureSlice(shapes, total - addedCount + 1, addedCount, result.Source)
+        Dim measuredSlice As MeasuredShapeSet = MeasureSlice(shapes, total - addedCount + 1, addedCount, result.Source)
+        measuredSlice.InputKind = MeasurementInputKind.ShapeCollection
+        Return measuredSlice
     End Function
 
     ''' <summary>
-    ''' Ukur sekumpulan objek pilihan (ShapeRange / Shape). Berguna untuk objek
-    ''' sumber sebelum di-copy. Tidak mengubah pilihan maupun objek.
+    ''' Ukur sekumpulan objek pilihan (Shape tunggal / ShapeRange / koleksi COM).
+    ''' Berguna untuk objek sumber sebelum di-copy; tidak mengubah pilihan
+    ''' maupun objek.
+    '''
+    ''' Aturan (penting, hasil review):
+    '''   1. Shape tunggal = objek yang MEMANG tidak punya anggota Count.
+    '''      Kegagalan membaca Count (COM mati/RPC) TIDAK dianggap sebagai bukti
+    '''      bahwa input adalah satu Shape.
+    '''   2. ShapeRange / koleksi dengan Count terbaca -> setiap objek diukur.
+    '''   3. Jumlah atau jenis objek tidak dapat dipastikan -> hasil dikembalikan
+    '''      TANPA geometri dan dengan struktur ditandai tidak terbaca, sehingga
+    '''      CopyVerification menghasilkan Partial (bukan Verified).
     ''' </summary>
     Public Shared Function MeasureSelection(rangeOrShape As Object) As MeasuredShapeSet
+        Dim kind As MeasurementInputKind = ClassifyInput(rangeOrShape)
         Dim result As New MeasuredShapeSet()
-        result.Source = "selection (objek sumber)"
+        result.InputKind = kind
 
-        If rangeOrShape Is Nothing Then
+        If kind = MeasurementInputKind.Empty Then
+            result.Source = "selection (kosong)"
             result.Reason = "selection kosong"
             Return result
         End If
 
-        Dim total As Integer = SafeCount(rangeOrShape)
-        If total < 0 Then
-            ' Bukan range (Shape tunggal tanpa Count): ukur sebagai satu objek.
-            Return MeasureSingleShape(rangeOrShape, result.Source)
+        If kind = MeasurementInputKind.SingleShape Then
+            Dim singleShape As MeasuredShapeSet =
+                MeasureSingleShape(rangeOrShape, "selection (Shape tunggal, tanpa Count)")
+            singleShape.InputKind = MeasurementInputKind.SingleShape
+            Return singleShape
         End If
-        If total = 0 Then
+
+        Dim countRead As CountReadResult = TryReadCount(rangeOrShape)
+        If kind = MeasurementInputKind.Unknown OrElse Not countRead.IsOk Then
+            ' Jumlah objek tidak diketahui -> TIDAK mengukur apa pun.
+            result.Source = "selection (" & DescribeInputKind(kind) & ")"
+            result.Bounds = BoundingBox.Empty()
+            result.Signature.MarkUnreadable()
+            result.Reason = "jumlah objek seleksi tidak dapat diverifikasi (" &
+                            countRead.Describe() & ")"
+            Return result
+        End If
+
+        If countRead.Count = 0 Then
+            result.Source = "selection (" & DescribeInputKind(kind) & ")"
             result.Reason = "selection kosong"
             Return result
         End If
 
-        Return MeasureSlice(rangeOrShape, 1, total, result.Source)
+        Dim measuredSlice As MeasuredShapeSet = MeasureSlice(rangeOrShape, 1, countRead.Count,
+                                                             "selection (" & DescribeInputKind(kind) & ")")
+        measuredSlice.InputKind = kind
+        Return measuredSlice
     End Function
 
     ''' <summary>Ukur satu objek saja.</summary>
@@ -205,20 +426,33 @@ Public Class CopyMeasurement
             Return result
         End If
 
+        result.InputKind = MeasurementInputKind.SingleShape
+
         Dim typeCode As Integer = SafeTypeCode(shape)
-        If typeCode < 0 Then
-            result.Signature.MarkUnreadable()
-        Else
+        Dim typeReadable As Boolean = (typeCode >= 0)
+        If typeReadable Then
             result.Signature.AddShapeType(typeCode)
+        Else
+            result.Signature.MarkUnreadable()
         End If
 
+        Dim geometryError As String = ""
         Try
             result.Bounds = BoundingBox.FromCenter(CDbl(shape.CenterX), CDbl(shape.CenterY),
                                                    CDbl(shape.SizeWidth), CDbl(shape.SizeHeight))
         Catch ex As Exception
             result.Bounds = BoundingBox.Empty()
-            result.Reason = "geometri tidak dapat diukur: " & ex.Message
+            geometryError = DescribeError(ex)
         End Try
+
+        ' Alasan dilaporkan apa adanya: objek tunggal pun bisa tidak terukur,
+        ' dan itu harus terlihat sebagai Partial, bukan sukses.
+        Dim reasons As New List(Of String)()
+        If Not typeReadable Then reasons.Add("tipe objek tidak dapat dibaca")
+        If Not String.IsNullOrEmpty(geometryError) Then
+            reasons.Add("geometri tidak dapat diukur: " & geometryError)
+        End If
+        If reasons.Count > 0 Then result.Reason = String.Join("; ", reasons.ToArray())
         Return result
     End Function
 

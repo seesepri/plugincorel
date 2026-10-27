@@ -377,6 +377,8 @@ Public Class FakeDocument
     Public Property FailEndCommandGroup As Boolean = False
     Public Property SaveFails As Boolean = False
     Public Property SaveWritesFile As Boolean = True
+    ''' <summary>Bila True, SaveAs "berhasil" tetapi menulis file 0 byte.</summary>
+    Public Property SaveWritesEmptyFile As Boolean = False
     Public Property CloseFails As Boolean = False
 
     ' --- rekaman pemanggilan ----------------------------------------------
@@ -442,7 +444,11 @@ Public Class FakeDocument
         If SaveWritesFile Then
             Dim folder As String = Path.GetDirectoryName(targetFile)
             If Not String.IsNullOrEmpty(folder) Then Directory.CreateDirectory(folder)
-            File.WriteAllText(targetFile, "fake cdr content")
+            If SaveWritesEmptyFile Then
+                File.WriteAllBytes(targetFile, New Byte() {})
+            Else
+                File.WriteAllText(targetFile, "fake cdr content")
+            End If
         End If
         FilePath = targetFile
         Name = Path.GetFileName(targetFile)

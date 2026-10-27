@@ -14,6 +14,18 @@ Imports System.IO
 
 Public Module BatchPolicyTests
 
+    ''' <summary>Hitung kemunculan teks (untuk mendeteksi duplikasi isi CSV).</summary>
+    Private Function CountOccurrences(text As String, needle As String) As Integer
+        If String.IsNullOrEmpty(text) OrElse String.IsNullOrEmpty(needle) Then Return 0
+        Dim count As Integer = 0
+        Dim index As Integer = text.IndexOf(needle, StringComparison.Ordinal)
+        Do While index >= 0
+            count += 1
+            index = text.IndexOf(needle, index + needle.Length, StringComparison.Ordinal)
+        Loop
+        Return count
+    End Function
+
     Public Sub Register(runner As TestRunner)
         Dim suite As TestSuite = runner.AddSuite("Kebijakan file batch (Temuan D/E)")
 
@@ -164,6 +176,22 @@ Public Module BatchPolicyTests
             Check.Contains(entry.Message, "OK 1", "jumlah OK")
             Check.Contains(entry.Message, "SEBAGIAN 1", "jumlah SEBAGIAN")
             Check.Contains(entry.Message, "GAGAL 1", "jumlah GAGAL")
+        End Sub)
+
+        suite.Add("ringkasan CSV: teks status tidak dirakit ganda (butir 3)", Sub()
+            Dim entry As BatchLogEntry = BatchLog.SummaryEntry("kualitas 80", 3, 1, 1, 1, 4.2)
+            Dim message As String = entry.Message
+
+            ' Setiap hitungan muncul TEPAT sekali: penulisan ganda akan
+            ' menggandakan teks ini.
+            Check.AreEqual(1, CountOccurrences(message, "OK 1"), "OK 1 sekali")
+            Check.AreEqual(1, CountOccurrences(message, "SEBAGIAN 1"), "SEBAGIAN 1 sekali")
+            Check.AreEqual(1, CountOccurrences(message, "GAGAL 1"), "GAGAL 1 sekali")
+            Check.AreEqual(1, CountOccurrences(message, "kualitas 80"), "pengaturan sekali")
+            Check.AreEqual(BatchLog.BuildSummaryMessage("kualitas 80", 1, 1, 1), message,
+                           "satu sumber teks ringkasan")
+            Check.AreEqual("RINGKASAN", entry.Status, "status ringkasan")
+            Check.AreEqual(3, entry.Pages, "kolom jumlah file")
         End Sub)
     End Sub
 End Module

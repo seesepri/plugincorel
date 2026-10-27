@@ -802,26 +802,50 @@ Public Class WatermarkEngine
                     localResult.ProofPdfFiles.AddRange(partResult.ProofPdfFiles)
                     localResult.LogRowsWritten += partResult.LogRowsWritten
 
-                    ' --- save (hanya boleh dihitung sukses bila terverifikasi) --
+                    ' --- save: pemanggilan SaveAs & validasi output DIPISAH ------
+                    ' Review lanjutan PR #2 butir 2:
+                    '   - SaveCallSucceeded mencatat berhasil/gagalnya PEMANGGILAN,
+                    '   - SaveSucceeded hanya True bila penulisan TERBUKTI (berkas
+                    '     baru muncul, atau berkas lama berubah ukuran/waktu),
+                    '   - file lama yang masih ada TIDAK dianggap bukti sukses,
+                    '   - verifikasi memakai metadata file; dokumen TIDAK dibuka ulang
+                    '     sehingga dokumen aktif/instance COM pengguna tidak terganggu.
                     outcome.SaveAttempted = True
+                    Dim saveMode As SaveOutputMode =
+                        If(saveInPlace, SaveOutputMode.OverwriteInPlace, SaveOutputMode.NewFile)
+                    Dim beforeSave As SaveOutputSnapshot = SaveOutputSnapshot.Capture(targetPath)
+
+                    Dim saveCallError As String = ""
                     Try
                         doc.SaveAs(targetPath)
-                        If Not File.Exists(targetPath) Then
-                            Throw New InvalidOperationException("SaveAs selesai tetapi file output tidak ditemukan.")
-                        End If
-                        If New FileInfo(targetPath).Length <= 0 Then
-                            Throw New InvalidOperationException("File output tersimpan tetapi berukuran 0 byte.")
-                        End If
-                        outcome.SaveSucceeded = True
-                        localResult.DocumentsTouched += 1
-                        localResult.OutputFolder = Path.GetDirectoryName(targetPath)
-                        localResult.OutputFile = targetPath
-                        Report("Disimpan: " & targetPath)
+                        outcome.SaveCallSucceeded = True
                     Catch saveEx As Exception
-                        outcome.Messages.Add("gagal menyimpan: " & saveEx.GetType().Name & ": " & saveEx.Message)
-                        localResult.Failures.Add(Path.GetFileName(sourceFile) & ": gagal menyimpan — " &
-                                                 saveEx.GetType().Name & ": " & saveEx.Message)
+                        saveCallError = saveEx.GetType().Name & ": " & saveEx.Message
+                        outcome.Messages.Add("gagal menyimpan: " & saveCallError)
+                        localResult.Failures.Add(Path.GetFileName(sourceFile) & ": gagal menyimpan — " & saveCallError)
                     End Try
+
+                    If outcome.SaveCallSucceeded Then
+                        Dim afterSave As SaveOutputSnapshot = SaveOutputSnapshot.Capture(targetPath)
+                        Dim saveCheck As SaveOutputVerification =
+                            SaveOutputVerification.Verify(beforeSave, afterSave, saveMode)
+                        outcome.SaveVerificationLabel = saveCheck.StatusLabel
+                        outcome.SaveVerificationReason = saveCheck.Reason
+
+                        If saveCheck.IsVerified Then
+                            outcome.SaveSucceeded = True
+                            localResult.DocumentsTouched += 1
+                            localResult.OutputFolder = Path.GetDirectoryName(targetPath)
+                            localResult.OutputFile = targetPath
+                            Report("Disimpan (" & saveCheck.StatusLabel & "): " & targetPath)
+                        Else
+                            outcome.Messages.Add("penyimpanan tidak terverifikasi (" &
+                                                 saveCheck.StatusLabel & "): " & saveCheck.Reason)
+                            localResult.Failures.Add(Path.GetFileName(sourceFile) &
+                                                     ": penyimpanan tidak terverifikasi (" &
+                                                     saveCheck.StatusLabel & ") — " & saveCheck.Reason)
+                        End If
+                    End If
 
                 Catch ex As Exception
                     outcome.FatalError = ex.GetType().Name & ": " & ex.Message
