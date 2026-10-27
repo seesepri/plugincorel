@@ -14,12 +14,15 @@ Prinsip kerja: **tanpa rewrite**, perubahan sekecil mungkin per temuan, fitur la
 | 1. `python tools/static-checks.py` | **PASS** — 200 pemeriksaan, 0 gagal | output di §7.1 |
 | 2. Regression/unit tests tanpa CorelDRAW | **PASS** — 103 test, 0 gagal | output di §7.2 |
 | 3. Compile seluruh proyek (`Program.vb`, `WatermarkDialog.vb`, engine, …) | **PASS (compile-check)** — lihat catatan | §7.3 |
-| 4. Build Release x64 dengan **MSBuild di Windows** | **NOT RUN** | tidak ada Windows/MSBuild di lingkungan ini |
+| 4. Build Release x64 dengan **MSBuild di Windows** | **PASS (CI `windows-latest`)** — run 40444845364 | §7.4 |
 | 5. Smoke test / integration test di **CorelDRAW 2022** | **NOT RUN** | CorelDRAW tidak tersedia di lingkungan ini |
 | 6. ZIP source | **DIBUAT & DIVERIFIKASI** (ekstrak + cek isi + jalankan checks dari hasil ekstrak) | §7.6 |
 
-> Build Windows dan integration test CorelDRAW **tidak diklaim lulus**. Langkah reproduksinya
-> ada di §6 dan `PANDUAN-UJI.md` §10 supaya bisa dijalankan di mesin yang punya CorelDRAW 2022.
+> Build Windows sudah diverifikasi lewat GitHub Actions (`windows-latest`): static checks →
+> regression tests → `msbuild /t:Rebuild /p:Configuration=Release /p:Platform=x64` semuanya
+> **success**, dan artifaknya berisi `CorelPageCopier.exe` PE32+ x86-64 (lihat §7.4).
+> **Integration test CorelDRAW 2022 tetap belum dijalankan (NOT RUN)** — langkahnya ada di
+> §6 dan `PANDUAN-UJI.md` §10.
 
 Catatan §7.3: tidak tersedia Windows, jadi MSBuild Windows tidak bisa dipakai. Sebagai gantinya
 seluruh 13 file `.vb` proyek **dikompilasi dengan compiler VB (Roslyn) milik .NET SDK 8 terhadap
@@ -401,10 +404,38 @@ Proyek ini hanya alat verifikasi — **bukan** pengganti build rilis MSBuild.
 
 Status: **PASS untuk compile-check**, **NOT RUN untuk build MSBuild Windows** (§7.4).
 
-### 7.4 Build Release x64 dengan MSBuild di Windows — **NOT RUN**
+### 7.4 Build Release x64 dengan MSBuild di Windows — **PASS**
 
-Alasan: lingkungan audit Linux, tanpa Windows SDK/MSBuild dan tanpa CorelDRAW 2022.
-Perintah yang harus dijalankan: lihat §6. Tidak ada klaim keberhasilan.
+Dijalankan di GitHub Actions, runner `windows-latest`, workflow `build-release.yml` pada
+pull request (event `pull_request`), commit `3d8ce621`:
+
+```
+Run        : 40444845364
+URL        : https://github.com/seesepri/plugincorel/actions/runs/40444845364
+Status     : completed / success   (03:33:41Z → 03:34:30Z)
+Job        : Build Windows x64 (windows-latest)
+
+Steps:
+  3 Static checks (undo grouping, watermark exclusion, unit normalization)  success
+  4 Regression tests (tanpa CorelDRAW)                                      success
+  5 Setup MSBuild                                                          success
+  6 Build .NET Framework 4.8   (msbuild /m /t:Rebuild /p:Configuration=Release /p:Platform=x64)  success
+  7 Prepare release package                                                success
+  8 Upload build artifacts                                                 success
+  9 Create Draft GitHub Release                                            skipped (bukan tag)
+```
+
+Artifact `CorelPageCopier-Windows-x64` (220.642 byte) diunduh & diperiksa ulang:
+
+```
+release-package/CorelPageCopier.exe   210.944 byte
+  file(1)  : PE32+ executable for MS Windows (GUI), x86-64, Mono/.Net assembly
+  header   : machine = 0x8664 (x64/AMD64)
+CorelPageCopier-Windows-x64.zip       210.944 (exe) + 4.155 (README_ID.md) + 621 (ToolbarLauncher.bas)
+```
+
+Yang **belum** dibuktikan oleh CI ini: aplikasi benar-benar berjalan & berinteraksi dengan
+CorelDRAW 2022 (butuh integration test manual, §7.5).
 
 ### 7.5 Integration / smoke test CorelDRAW 2022 — **NOT RUN**
 
